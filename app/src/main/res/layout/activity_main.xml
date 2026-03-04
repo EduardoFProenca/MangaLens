@@ -27,6 +27,16 @@
         android:layout_height="wrap_content"
         android:text="Iniciar MangaLens"
         android:paddingHorizontal="32dp"
+        android:paddingVertical="16dp"
+        android:layout_marginBottom="16dp"/>
+
+    <Button
+        android:id="@+id/btnStop"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Parar MangaLens"
+        android:backgroundTint="#CC0000"
+        android:paddingHorizontal="32dp"
         android:paddingVertical="16dp"/>
 
 </LinearLayout>

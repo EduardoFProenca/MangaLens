@@ -92,15 +92,14 @@ class FloatingService : LifecycleService() {
     // ─────────────────────────────────────────────
 
     private fun showFloatingButton() {
-        // Infla o layout do botão
         floatingButton = LayoutInflater.from(this)
             .inflate(R.layout.layout_floating_button, null)
 
-        // Parâmetros da janela: fica por cima de tudo
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            // FLAG_NOT_FOCUSABLE mas SEM FLAG_NOT_TOUCHABLE
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -114,27 +113,38 @@ class FloatingService : LifecycleService() {
     }
 
     private fun setupButtonTouchListener(params: WindowManager.LayoutParams) {
-        var initialX = 0; var initialY = 0
-        var touchX = 0f; var touchY = 0f
+        var initialX = 0
+        var initialY = 0
+        var touchX = 0f
+        var touchY = 0f
+        var moved = false
 
-        floatingButton.setOnTouchListener { view, event ->
+        floatingButton.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    initialX = params.x; initialY = params.y
-                    touchX = event.rawX; touchY = event.rawY
+                    initialX = params.x
+                    initialY = params.y
+                    touchX = event.rawX
+                    touchY = event.rawY
+                    moved = false
                     isLongPress = false
-                    // Agenda o toque longo
+
                     handler.postDelayed({
-                        isLongPress = true
-                        showRadialMenu() // abre menu circular
+                        if (!moved) {
+                            isLongPress = true
+                            showRadialMenu()
+                        }
                     }, LONG_PRESS_DURATION)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (event.rawX - touchX).toInt()
                     val dy = (event.rawY - touchY).toInt()
-                    // Só move se não for toque longo
-                    if (!isLongPress) {
+
+                    // Só considera movimento se deslocou mais de 5px
+                    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+                        moved = true
+                        handler.removeCallbacksAndMessages(null)
                         params.x = initialX + dx
                         params.y = initialY + dy
                         windowManager.updateViewLayout(floatingButton, params)
@@ -143,8 +153,7 @@ class FloatingService : LifecycleService() {
                 }
                 MotionEvent.ACTION_UP -> {
                     handler.removeCallbacksAndMessages(null)
-                    if (!isLongPress) {
-                        // Toque rápido = captura imediata
+                    if (!moved && !isLongPress) {
                         captureAndProcess()
                     }
                     true
@@ -153,7 +162,6 @@ class FloatingService : LifecycleService() {
             }
         }
     }
-
     // ─────────────────────────────────────────────
     // MENU RADIAL (toque longo)
     // ─────────────────────────────────────────────

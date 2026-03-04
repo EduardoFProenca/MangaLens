@@ -44,6 +44,14 @@ class MainActivity : AppCompatActivity() {
         OcrProcessor.downloadModelIfNeeded {
             Toast.makeText(this, "Modelo de tradução pronto!", Toast.LENGTH_SHORT).show()
         }
+
+        findViewById<Button>(R.id.btnStop).setOnClickListener {
+            val intent = Intent(this, FloatingService::class.java).apply {
+                action = FloatingService.ACTION_STOP
+            }
+            startService(intent)
+            Toast.makeText(this, "MangaLens parado!", Toast.LENGTH_SHORT).show()
+        }
     }
 
     /**
@@ -79,4 +87,6 @@ class MainActivity : AppCompatActivity() {
         // Minimiza o app para liberar a tela
         moveTaskToBack(true)
     }
+
+
 }
