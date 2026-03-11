@@ -1,5 +1,6 @@
 package com.mangalens
 
+import android.widget.TextView
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -46,7 +47,7 @@ object GameOverlayManager {
         }
 
         // Botão fechar
-        view.findViewById<ImageButton>(R.id.btnClose).setOnClickListener {
+        view.findViewById<TextView>(R.id.btnClose).setOnClickListener {
             removeOverlay(windowManager)
         }
 

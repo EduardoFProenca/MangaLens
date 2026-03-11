@@ -6,16 +6,16 @@
     android:background="#EE1A1A2E"
     android:padding="16dp">
 
-    <!-- Botão fechar -->
-    <ImageButton
+    <TextView
         android:id="@+id/btnClose"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="end"
-        android:src="@android:drawable/ic_menu_close_clear_cancel"
-        android:background="?attr/selectableItemBackgroundBorderless"/>
+        android:text="✕"
+        android:textColor="#FFFFFF"
+        android:textSize="20sp"
+        android:padding="8dp"/>
 
-    <!-- MODO NORMAL: só tradução -->
     <LinearLayout
         android:id="@+id/containerTranslation"
         android:layout_width="match_parent"
@@ -33,7 +33,6 @@
 
     </LinearLayout>
 
-    <!-- MODO GAME: mini-game -->
     <LinearLayout
         android:id="@+id/containerGame"
         android:layout_width="match_parent"
@@ -49,7 +48,6 @@
             android:textSize="12sp"
             android:layout_marginBottom="8dp"/>
 
-        <!-- Área da resposta do usuário -->
         <com.google.android.material.chip.ChipGroup
             android:id="@+id/chipGroupAnswer"
             android:layout_width="match_parent"
@@ -64,13 +62,11 @@
             android:background="#444444"
             android:layout_marginVertical="8dp"/>
 
-        <!-- Palavras disponíveis embaralhadas -->
         <com.google.android.material.chip.ChipGroup
             android:id="@+id/chipGroupWords"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"/>
 
-        <!-- Resultado (certo/errado + tradução) -->
         <TextView
             android:id="@+id/tvResult"
             android:layout_width="match_parent"

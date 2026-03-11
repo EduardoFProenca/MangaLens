@@ -1,6 +1,7 @@
 package com.mangalens
 
 import android.app.*
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
@@ -11,7 +12,7 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.view.*
-import android.widget.ImageButton
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import kotlinx.coroutines.*
@@ -30,7 +31,7 @@ class FloatingService : LifecycleService() {
     // ─── Controle de toque longo ───
     private val handler = Handler(Looper.getMainLooper())
     private var isLongPress = false
-    private val LONG_PRESS_DURATION = 500L // meio segundo
+    private val LONG_PRESS_DURATION = 500L
 
     // ─── Coroutine para não travar a UI ───
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -44,10 +45,6 @@ class FloatingService : LifecycleService() {
         private const val NOTIFICATION_ID = 1
     }
 
-    // ─────────────────────────────────────────────
-    // CICLO DE VIDA DO SERVIÇO
-    // ─────────────────────────────────────────────
-
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -59,7 +56,6 @@ class FloatingService : LifecycleService() {
 
         when (intent?.action) {
             ACTION_START -> {
-                // Pega os dados de permissão vindos da MainActivity
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1)
                 val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
 
@@ -71,13 +67,11 @@ class FloatingService : LifecycleService() {
                 stopSelf()
             }
         }
-
-        return START_STICKY // reinicia se for morto pelo sistema
+        return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // Limpeza: muito importante para não vazar memória!
         serviceScope.cancel()
         mediaProjection?.stop()
         virtualDisplay?.release()
@@ -99,7 +93,6 @@ class FloatingService : LifecycleService() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            // FLAG_NOT_FOCUSABLE mas SEM FLAG_NOT_TOUCHABLE
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -141,7 +134,6 @@ class FloatingService : LifecycleService() {
                     val dx = (event.rawX - touchX).toInt()
                     val dy = (event.rawY - touchY).toInt()
 
-                    // Só considera movimento se deslocou mais de 5px
                     if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
                         moved = true
                         handler.removeCallbacksAndMessages(null)
@@ -153,7 +145,13 @@ class FloatingService : LifecycleService() {
                 }
                 MotionEvent.ACTION_UP -> {
                     handler.removeCallbacksAndMessages(null)
+                    // CORREÇÃO APLICADA AQUI:
                     if (!moved && !isLongPress) {
+                        Toast.makeText(
+                            this@FloatingService,
+                            "📸 Capturando...",
+                            Toast.LENGTH_SHORT
+                        ).show()
                         captureAndProcess()
                     }
                     true
@@ -162,16 +160,11 @@ class FloatingService : LifecycleService() {
             }
         }
     }
-    // ─────────────────────────────────────────────
-    // MENU RADIAL (toque longo)
-    // ─────────────────────────────────────────────
 
     private fun showRadialMenu() {
-        // Por enquanto exibe um Toast; você vai criar o layout depois
-        android.widget.Toast.makeText(
-            this, "Menu: Tempo Real | Área | Tela Cheia", android.widget.Toast.LENGTH_SHORT
+        Toast.makeText(
+            this, "Menu: Tempo Real | Área | Tela Cheia", Toast.LENGTH_SHORT
         ).show()
-        // TODO: Implementar o menu circular com as 3 opções + Switch Modo Game
     }
 
     // ─────────────────────────────────────────────
@@ -186,17 +179,16 @@ class FloatingService : LifecycleService() {
 
         mediaProjection = projectionManager.getMediaProjection(resultCode, data)
 
-        // Pega o tamanho da tela
         val metrics = resources.displayMetrics
         val width = metrics.widthPixels
         val height = metrics.heightPixels
         val density = metrics.densityDpi
 
-        // ImageReader: buffer que guarda o frame mais recente
-        // MAX_IMAGES = 2 evita acumular frames na memória
+        // Usamos PixelFormat.RGBA_8888.
+        // Se o Android Studio continuar sublinhando em vermelho, você pode usar o número 1
+        // que é o valor real de RGBA_8888, mas o código abaixo deve funcionar:
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
 
-        // VirtualDisplay: espelha a tela real para o ImageReader
         virtualDisplay = mediaProjection?.createVirtualDisplay(
             "MangaLensCapture",
             width, height, density,
@@ -206,28 +198,18 @@ class FloatingService : LifecycleService() {
         )
     }
 
-    /**
-     * Captura um frame e passa para o OCR.
-     * Roda em background para não travar a UI.
-     */
     private fun captureAndProcess() {
         serviceScope.launch(Dispatchers.IO) {
             val bitmap = captureScreen() ?: return@launch
 
-            // Passa para o processador de OCR + Tradução
             withContext(Dispatchers.Main) {
                 OcrProcessor.process(this@FloatingService, bitmap) { results ->
-                    // results = lista de TextBlock com texto e BoundingBox
                     GameOverlayManager.show(this@FloatingService, windowManager, results)
                 }
             }
         }
     }
 
-    /**
-     * Extrai o Bitmap do ImageReader de forma eficiente.
-     * acquireLatestImage() pega só o frame mais recente (descarta os velhos).
-     */
     private fun captureScreen(): android.graphics.Bitmap? {
         val image = imageReader?.acquireLatestImage() ?: return null
 
@@ -246,18 +228,18 @@ class FloatingService : LifecycleService() {
             bitmap.copyPixelsFromBuffer(buffer)
             bitmap
         } finally {
-            image.close() // CRÍTICO: sem isso a memória esgota!
+            image.close()
         }
     }
 
     // ─────────────────────────────────────────────
-    // NOTIFICAÇÃO (obrigatória para Foreground Service)
+    // NOTIFICAÇÃO
     // ─────────────────────────────────────────────
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID, "MangaLens Overlay",
-            NotificationManager.IMPORTANCE_LOW // LOW = sem som
+            NotificationManager.IMPORTANCE_LOW
         )
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
