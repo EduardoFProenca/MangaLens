@@ -27,7 +27,8 @@ object GameOverlayManager {
         removeOverlay(windowManager)
         if (results.isEmpty()) return
 
-        val inflater = LayoutInflater.from(context)
+        val themedContext = android.view.ContextThemeWrapper(context, R.style.Theme_MangaLens)
+        val inflater = LayoutInflater.from(themedContext)
         val view = inflater.inflate(R.layout.layout_game_overlay, null)
 
         val params = WindowManager.LayoutParams(
