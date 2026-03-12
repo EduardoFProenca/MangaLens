@@ -59,6 +59,8 @@ object OcrProcessor {
         recognizer.process(image)
             .addOnSuccessListener { visionText ->
                 val blocks = visionText.textBlocks
+                // DEBUG: mostra quantos blocos foram encontrados
+                android.util.Log.d("MangaLens", "OCR encontrou ${blocks.size} blocos: ${visionText.text.take(100)}")
                 if (blocks.isEmpty()) return@addOnSuccessListener
 
                 val results = mutableListOf<TextResult>()

@@ -200,18 +200,73 @@ class FloatingService : LifecycleService() {
 
     private fun captureAndProcess() {
         serviceScope.launch(Dispatchers.IO) {
-            val bitmap = captureScreen() ?: return@launch
+            // Aguarda 300ms para a tela estabilizar após o toque
+            Thread.sleep(300)
+
+            var bitmap: android.graphics.Bitmap? = null
+            repeat(15) {
+                bitmap = captureScreen()
+                if (bitmap != null) return@repeat
+                Thread.sleep(100)
+            }
+
+            val finalBitmap = bitmap ?: run {
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        this@FloatingService, "❌ Nenhum frame", android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+                return@launch
+            }
+
+// DEBUG: salva o bitmap para ver o que foi capturado
+            withContext(Dispatchers.IO) {
+                try {
+                    val file = java.io.File(getExternalFilesDir(null), "debug_capture.png")
+                    java.io.FileOutputStream(file).use { out ->
+                        finalBitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, out)
+                    }
+                    android.util.Log.d("MangaLens", "Screenshot salvo em: ${file.absolutePath}")
+                    android.util.Log.d("MangaLens", "Tamanho: ${finalBitmap.width}x${finalBitmap.height}")
+                } catch (e: Exception) {
+                    android.util.Log.e("MangaLens", "Erro ao salvar: ${e.message}")
+                }
+                // Salva na pasta pública de Downloads do celular
+                val file = java.io.File(
+                    android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                    "debug_capture.png"
+                )
+            }
 
             withContext(Dispatchers.Main) {
-                OcrProcessor.process(this@FloatingService, bitmap) { results ->
-                    GameOverlayManager.show(this@FloatingService, windowManager, results)
+                OcrProcessor.process(this@FloatingService, finalBitmap) { results ->
+                    if (results.isEmpty()) {
+                        android.widget.Toast.makeText(
+                            this@FloatingService,
+                            "🔍 Nenhum texto encontrado",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        GameOverlayManager.show(this@FloatingService, windowManager, results)
+                    }
                 }
             }
         }
     }
 
     private fun captureScreen(): android.graphics.Bitmap? {
-        val image = imageReader?.acquireLatestImage() ?: return null
+        val reader = imageReader ?: return null
+
+        // Descarta todos os frames antigos, pega só o mais recente
+        var image: android.media.Image? = null
+        var latest = reader.acquireLatestImage()
+        while (latest != null) {
+            image?.close() // fecha o anterior
+            image = latest
+            latest = reader.acquireLatestImage()
+        }
+
+        if (image == null) return null
 
         return try {
             val planes = image.planes
