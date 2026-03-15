@@ -21,22 +21,15 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-    kotlinOptions {
-        jvmTarget = "11"
-    }
-    buildFeatures {
-        viewBinding = true
-    }
+    kotlinOptions { jvmTarget = "11" }
+    buildFeatures { viewBinding = true }
 }
 
 dependencies {
@@ -49,9 +42,20 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
-    // ML Kit OCR e Tradução offline
+    // OCR Latino (EN, PT…)
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
+
+    // OCR Japonês — artifact separado, requer sync para baixar
+    implementation("com.google.mlkit:text-recognition-japanese:16.0.0")
+
+    // OCR Chinês
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.0")
+
+    // Tradução offline EN→PT e JA→PT
     implementation("com.google.mlkit:translate:17.0.2")
+
+    // Identificação de idioma
+    implementation("com.google.mlkit:language-id:17.0.5")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")

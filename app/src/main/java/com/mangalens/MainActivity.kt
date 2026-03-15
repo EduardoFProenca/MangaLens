@@ -17,7 +17,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var projectionManager: MediaProjectionManager
 
-    // Lida com o resultado da permissão de captura de tela
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -32,61 +31,43 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        projectionManager =
-            getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
-        // Botão principal
         findViewById<Button>(R.id.btnStart).setOnClickListener {
             checkOverlayPermissionAndStart()
         }
 
-        // Baixa o modelo de tradução em background assim que abre o app
-        OcrProcessor.downloadModelIfNeeded {
-            Toast.makeText(this, "Modelo de tradução pronto!", Toast.LENGTH_SHORT).show()
+        findViewById<Button>(R.id.btnStop).setOnClickListener {
+            startService(Intent(this, FloatingService::class.java).apply {
+                action = FloatingService.ACTION_STOP
+            })
+            Toast.makeText(this, "MangaLens parado!", Toast.LENGTH_SHORT).show()
         }
 
-        findViewById<Button>(R.id.btnStop).setOnClickListener {
-            val intent = Intent(this, FloatingService::class.java).apply {
-                action = FloatingService.ACTION_STOP
-            }
-            startService(intent)
-            Toast.makeText(this, "MangaLens parado!", Toast.LENGTH_SHORT).show()
+        // Baixa modelos EN→PT e JA→PT em background
+        OcrProcessor.downloadModelsIfNeeded {
+            Toast.makeText(this, "✅ Modelos prontos (EN + JA)", Toast.LENGTH_SHORT).show()
         }
     }
 
-    /**
-     * Pede permissão de overlay (aparecer sobre outros apps).
-     * Sem isso o botão flutuante não funciona.
-     */
     private fun checkOverlayPermissionAndStart() {
         if (!Settings.canDrawOverlays(this)) {
-            // Abre as configurações para o usuário permitir manualmente
-            val intent = Intent(
+            startActivity(Intent(
                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:$packageName")
-            )
-            startActivity(intent)
-            Toast.makeText(
-                this,
-                "Ative 'Aparecer sobre outros apps' e volte aqui",
-                Toast.LENGTH_LONG
-            ).show()
+            ))
+            Toast.makeText(this, "Ative 'Aparecer sobre outros apps' e volte aqui", Toast.LENGTH_LONG).show()
         } else {
-            // Pede permissão de captura de tela
             projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
         }
     }
 
     private fun startFloatingService(resultCode: Int, data: Intent) {
-        val intent = Intent(this, FloatingService::class.java).apply {
+        startForegroundService(Intent(this, FloatingService::class.java).apply {
             action = FloatingService.ACTION_START
             putExtra(FloatingService.EXTRA_RESULT_CODE, resultCode)
             putExtra(FloatingService.EXTRA_RESULT_DATA, data)
-        }
-        startForegroundService(intent)
-        // Minimiza o app para liberar a tela
+        })
         moveTaskToBack(true)
     }
-
-
 }

@@ -1,10 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ImageView
+<!--
+  Botão flutuante com badge de estado:
+  - Modo normal  → círculo roxo com ícone de câmera
+  - Modo área    → círculo laranja com triângulo (▲)
+  - Trava ativa  → badge de cadeado (🔒) aparece no canto
+-->
+<FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/floatingBtn"
-    android:layout_width="56dp"
-    android:layout_height="56dp"
-    android:src="@android:drawable/ic_menu_camera"
-    android:background="@drawable/circle_button_bg"
-    android:elevation="8dp"
-    android:contentDescription="MangaLens" />
+    android:layout_width="64dp"
+    android:layout_height="64dp">
+
+    <!-- Botão principal -->
+    <TextView
+        android:id="@+id/floatingBtn"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_gravity="center"
+        android:gravity="center"
+        android:text="📷"
+        android:textSize="24sp"
+        android:background="@drawable/circle_button_bg"
+        android:elevation="8dp"
+        android:contentDescription="MangaLens" />
+
+    <!-- Badge de cadeado — aparece no canto superior direito quando travado -->
+    <TextView
+        android:id="@+id/badgeLock"
+        android:layout_width="20dp"
+        android:layout_height="20dp"
+        android:layout_gravity="top|end"
+        android:gravity="center"
+        android:text="🔒"
+        android:textSize="11sp"
+        android:background="@drawable/badge_bg"
+        android:elevation="10dp"
+        android:visibility="gone" />
+
+</FrameLayout>
