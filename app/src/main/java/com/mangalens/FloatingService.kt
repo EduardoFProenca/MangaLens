@@ -26,36 +26,40 @@ import kotlinx.coroutines.*
 
 class FloatingService : LifecycleService() {
 
-    // ── UI ────────────────────────────────────────
     private lateinit var windowManager: WindowManager
     private lateinit var floatingRoot: View
     private lateinit var floatingBtn: TextView
     private lateinit var badgeLock: TextView
+    private lateinit var badgeMode: TextView   // badge de modo no canto inferior
 
-    // ── MediaProjection ───────────────────────────
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
-    private var screenWidth  = 0
-    private var screenHeight = 0
+    private var screenWidth   = 0
+    private var screenHeight  = 0
     private var screenDensity = 0
 
-    // ── Modos de captura ──────────────────────────
-    private enum class CaptureMode { SINGLE, AREA }
+    enum class CaptureMode { SINGLE, AREA, CONTINUOUS }
     private var captureMode = CaptureMode.SINGLE
 
-    // ── Estado da área ────────────────────────────
-    private var lockedRect: Rect? = null   // área travada (cadeado ativo)
-    private var areaLocked = false         // true = não pede seleção a cada toque
+    // Estado da área
+    private var lockedRect: Rect? = null
+    private var areaLocked = false
 
-    // ── Controle de toque ─────────────────────────
+    // ── Toggle do mini-game ───────────────────────
+    // true  = mini-game (embaralha palavras)
+    // false = tradução direta sobreposta
+    private var gameModeEnabled = true
+    // Última área usada (para repassar ao TranslationOverlay)
+    private var lastCropRect: Rect? = null
+
+    private val continuousCapture = ContinuousCapture(intervalMs = 1_500L, changeThreshold = 0.04f)
+
     private val handler     = Handler(Looper.getMainLooper())
     private var isLongPress = false
     private val LONG_PRESS  = 500L
 
-    // ── Coroutines ────────────────────────────────
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-
     @Volatile private var frameAvailable = false
 
     companion object {
@@ -96,7 +100,9 @@ class FloatingService : LifecycleService() {
     override fun onDestroy() {
         super.onDestroy()
         serviceScope.cancel()
+        continuousCapture.stop()
         AreaSelectorOverlay.dismiss(windowManager)
+        TranslationOverlay.dismiss(windowManager)
         tearDownProjection()
         if (::floatingRoot.isInitialized) runCatching { windowManager.removeView(floatingRoot) }
     }
@@ -109,6 +115,7 @@ class FloatingService : LifecycleService() {
         floatingRoot = LayoutInflater.from(this).inflate(R.layout.layout_floating_button, null)
         floatingBtn  = floatingRoot.findViewById(R.id.floatingBtn)
         badgeLock    = floatingRoot.findViewById(R.id.badgeLock)
+        badgeMode    = floatingRoot.findViewById(R.id.badgeMode)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -120,19 +127,31 @@ class FloatingService : LifecycleService() {
 
         setupTouchListener(params)
         windowManager.addView(floatingRoot, params)
+        updateButtonAppearance()
     }
 
-    /** Atualiza ícone e cor do botão conforme o modo atual */
+    /**
+     * Ícone e badges refletem o estado completo:
+     *  modo captura → ícone principal
+     *  mini-game    → badge "🎮" ou "📖" no canto inferior esquerdo
+     *  trava área   → badge "🔒" no canto superior direito
+     */
     private fun updateButtonAppearance() {
-        val (icon, color) = when (captureMode) {
-            CaptureMode.SINGLE -> "📷" to Color.parseColor("#CC6200EE")  // roxo
-            CaptureMode.AREA   -> "▲"  to Color.parseColor("#CC E65100".replace(" ","")) // laranja
+        val (icon, colorHex) = when (captureMode) {
+            CaptureMode.SINGLE     -> "📷" to "#CC6200EE"
+            CaptureMode.AREA       -> "▲"  to "#CCE65100"
+            CaptureMode.CONTINUOUS -> "🔄" to "#CC00796B"
         }
         floatingBtn.text = icon
-        (floatingBtn.background as? GradientDrawable)?.setColor(color)
-            ?: floatingBtn.setBackgroundColor(color)
+        val bg = floatingBtn.background
+        if (bg is GradientDrawable) bg.setColor(Color.parseColor(colorHex))
+        else floatingBtn.setBackgroundColor(Color.parseColor(colorHex))
 
         badgeLock.visibility = if (areaLocked) View.VISIBLE else View.GONE
+
+        // Badge de modo de leitura
+        badgeMode.text       = if (gameModeEnabled) "🎮" else "📖"
+        badgeMode.visibility = View.VISIBLE
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -176,45 +195,39 @@ class FloatingService : LifecycleService() {
     // ─────────────────────────────────────────────
 
     private fun showModeMenu() {
-        val options = when (captureMode) {
-            CaptureMode.SINGLE -> arrayOf(
-                "📷  Captura tela cheia (atual)",
-                "▲   Modo seleção de área"
-            )
-            CaptureMode.AREA -> arrayOf(
-                "📷  Captura tela cheia",
-                "▲   Modo seleção de área (atual)",
-                if (areaLocked) "🔓  Destravar área" else "🔒  Travar área atual"
-            )
-        }
+        val singleLabel     = if (captureMode == CaptureMode.SINGLE)     "📷  Tela Cheia ✓"      else "📷  Tela Cheia"
+        val areaLabel       = if (captureMode == CaptureMode.AREA)       "▲   Seleção de Área ✓" else "▲   Seleção de Área"
+        val continuousLabel = if (captureMode == CaptureMode.CONTINUOUS) "🔄  Tempo Real ✓"       else "🔄  Tempo Real"
+
+        // Toggle do mini-game — sempre visível
+        val gameLabel = if (gameModeEnabled) "🎮  Mini-game  [LIGADO]  → toque para desligar"
+        else                  "📖  Tradução direta  [LIGADA]  → toque para ligar mini-game"
+
+        // Trava — só aparece no modo Área
+        val lockLabel = if (captureMode == CaptureMode.AREA) {
+            if (areaLocked) "🔓  Destravar área" else "🔒  Travar área atual"
+        } else null
+
+        val options = listOfNotNull(
+            singleLabel, areaLabel, continuousLabel,
+            "─────────────────",   // separador visual
+            gameLabel,
+            lockLabel
+        ).toTypedArray()
 
         handler.post {
             val dlg = android.app.AlertDialog.Builder(
                 android.view.ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault_Dialog)
             )
-                .setTitle("Modo de captura")
+                .setTitle("MangaLens — Configurações")
                 .setItems(options) { _, which ->
-                    when {
-                        // Tela cheia
-                        which == 0 && captureMode != CaptureMode.SINGLE -> {
-                            captureMode = CaptureMode.SINGLE
-                            lockedRect  = null
-                            areaLocked  = false
-                            updateButtonAppearance()
-                            Toast.makeText(this, "📷 Captura tela cheia", Toast.LENGTH_SHORT).show()
-                        }
-                        // Área
-                        (which == 1) -> {
-                            captureMode = CaptureMode.AREA
-                            areaLocked  = false
-                            lockedRect  = null
-                            updateButtonAppearance()
-                            Toast.makeText(this, "▲ Seleção de área — toque para desenhar", Toast.LENGTH_SHORT).show()
-                        }
-                        // Travar / destravar (só aparece no modo AREA)
-                        (which == 2 && captureMode == CaptureMode.AREA) -> {
-                            toggleLock()
-                        }
+                    when (which) {
+                        0 -> switchCaptureTo(CaptureMode.SINGLE)
+                        1 -> switchCaptureTo(CaptureMode.AREA)
+                        2 -> switchCaptureTo(CaptureMode.CONTINUOUS)
+                        3 -> { /* separador — ignora */ }
+                        4 -> toggleGameMode()
+                        5 -> if (lockLabel != null) toggleLock()
                     }
                 }
                 .create()
@@ -223,15 +236,55 @@ class FloatingService : LifecycleService() {
         }
     }
 
+    // ─────────────────────────────────────────────
+    // TOGGLE DO MINI-GAME
+    // ─────────────────────────────────────────────
+
+    private fun toggleGameMode() {
+        gameModeEnabled = !gameModeEnabled
+        GameOverlayManager.gameModeEnabled = gameModeEnabled
+        updateButtonAppearance()
+
+        val msg = if (gameModeEnabled)
+            "🎮 Mini-game ligado — monte a frase!"
+        else
+            "📖 Tradução direta ligada — leitura rápida"
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    // ─────────────────────────────────────────────
+    // TROCA DE MODO DE CAPTURA
+    // ─────────────────────────────────────────────
+
+    private fun switchCaptureTo(mode: CaptureMode) {
+        if (captureMode == CaptureMode.CONTINUOUS && mode != CaptureMode.CONTINUOUS) {
+            continuousCapture.stop()
+        }
+        captureMode = mode
+        when (mode) {
+            CaptureMode.SINGLE -> {
+                areaLocked = false; lockedRect = null
+                updateButtonAppearance()
+                Toast.makeText(this, "📷 Tela cheia", Toast.LENGTH_SHORT).show()
+            }
+            CaptureMode.AREA -> {
+                updateButtonAppearance()
+                Toast.makeText(this, "▲ Seleção de área — toque para desenhar", Toast.LENGTH_SHORT).show()
+            }
+            CaptureMode.CONTINUOUS -> {
+                updateButtonAppearance()
+                Toast.makeText(this, "🔄 Tempo Real — monitorando mudanças...", Toast.LENGTH_SHORT).show()
+                startContinuousMode()
+            }
+        }
+    }
+
     private fun toggleLock() {
         if (areaLocked) {
-            // Destrava
-            areaLocked = false
-            lockedRect = null
+            areaLocked = false; lockedRect = null
             updateButtonAppearance()
             Toast.makeText(this, "🔓 Área destravada", Toast.LENGTH_SHORT).show()
         } else {
-            // Trava a área atual (se existir)
             if (lockedRect != null) {
                 areaLocked = true
                 updateButtonAppearance()
@@ -243,23 +296,30 @@ class FloatingService : LifecycleService() {
     }
 
     // ─────────────────────────────────────────────
-    // TOQUE SIMPLES → ação de captura
+    // TOQUE SIMPLES
     // ─────────────────────────────────────────────
 
     private fun onTap() {
         when (captureMode) {
             CaptureMode.SINGLE -> {
-                Toast.makeText(this, "📸 Capturando tela...", Toast.LENGTH_SHORT).show()
-                captureAndProcess(cropRect = null)
+                Toast.makeText(this, "📸 Capturando...", Toast.LENGTH_SHORT).show()
+                captureAndProcess(cropRect = null, isFullScreen = true)
             }
             CaptureMode.AREA -> {
                 if (areaLocked && lockedRect != null) {
-                    // Área travada: captura direto sem pedir seleção
-                    Toast.makeText(this, "🔒 Capturando área travada...", Toast.LENGTH_SHORT).show()
-                    captureAndProcess(cropRect = lockedRect)
+                    Toast.makeText(this, "🔒 Área travada — capturando...", Toast.LENGTH_SHORT).show()
+                    captureAndProcess(cropRect = lockedRect, isFullScreen = false)
                 } else {
-                    // Sem trava: abre seletor a cada toque
                     openAreaSelector()
+                }
+            }
+            CaptureMode.CONTINUOUS -> {
+                if (continuousCapture.isRunning) {
+                    continuousCapture.stop()
+                    Toast.makeText(this, "⏸ Tempo Real pausado", Toast.LENGTH_SHORT).show()
+                } else {
+                    startContinuousMode()
+                    Toast.makeText(this, "▶️ Tempo Real retomado", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -271,39 +331,51 @@ class FloatingService : LifecycleService() {
 
     private fun openAreaSelector() {
         AreaSelectorOverlay.show(
-            context       = this,
-            windowManager = windowManager,
+            context        = this,
+            windowManager  = windowManager,
             onAreaSelected = { rect ->
                 lockedRect = rect
                 Log.d(TAG, "Área selecionada: $rect")
-                // Captura imediatamente após selecionar
                 Toast.makeText(this, "✂️ Capturando área...", Toast.LENGTH_SHORT).show()
-                captureAndProcess(cropRect = rect)
+                captureAndProcess(cropRect = rect, isFullScreen = false)
             },
-            onCancel = {
-                Toast.makeText(this, "Seleção cancelada", Toast.LENGTH_SHORT).show()
-            }
+            onCancel = { Toast.makeText(this, "Seleção cancelada", Toast.LENGTH_SHORT).show() }
         )
     }
 
     // ─────────────────────────────────────────────
-    // CAPTURA + OCR + TRADUÇÃO  ← pipeline principal
+    // MODO CONTÍNUO
     // ─────────────────────────────────────────────
 
-    private fun captureAndProcess(cropRect: Rect?) {
-        serviceScope.launch(Dispatchers.IO) {
+    private fun startContinuousMode() {
+        rebuildImageReader()
+        continuousCapture.start(
+            scope     = serviceScope,
+            cropRect  = lockedRect,
+            onCapture = { captureScreen() },
+            onChanged = { bitmap, crop ->
+                OcrProcessor.process(this, bitmap, crop) { results ->
+                    if (results.isNotEmpty()) showResults(results, crop, isFullScreen = false)
+                }
+            },
+            onIdle = { Log.d(TAG, "Contínuo: tela estável") }
+        )
+    }
 
-            // 1. Reconstrói o ImageReader para garantir frame novo
+    // ─────────────────────────────────────────────
+    // PIPELINE PRINCIPAL
+    // ─────────────────────────────────────────────
+
+    private fun captureAndProcess(cropRect: Rect?, isFullScreen: Boolean) {
+        lastCropRect = cropRect
+
+        serviceScope.launch(Dispatchers.IO) {
             withContext(Dispatchers.Main) { rebuildImageReader() }
 
-            // 2. Aguarda sinal de frame disponível (até 4 s)
             val deadline = System.currentTimeMillis() + 4_000L
-            while (!frameAvailable && System.currentTimeMillis() < deadline) {
-                delay(40)
-            }
+            while (!frameAvailable && System.currentTimeMillis() < deadline) delay(40)
 
             if (!frameAvailable) {
-                Log.w(TAG, "Timeout aguardando frame")
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@FloatingService,
                         "❌ Tela não capturada — tente novamente", Toast.LENGTH_SHORT).show()
@@ -311,43 +383,54 @@ class FloatingService : LifecycleService() {
                 return@launch
             }
 
-            // Pequena pausa para o frame estabilizar
             delay(80)
 
-            // 3. Lê o bitmap
-            val fullBitmap: Bitmap = captureScreen() ?: run {
+            val bitmap: Bitmap = captureScreen() ?: run {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@FloatingService,
-                        "❌ Erro ao ler frame", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@FloatingService, "❌ Erro ao ler frame", Toast.LENGTH_SHORT).show()
                 }
                 return@launch
             }
 
-            Log.d(TAG, "Frame capturado: ${fullBitmap.width}x${fullBitmap.height}")
-            saveDebugBitmap(fullBitmap)
+            Log.d(TAG, "Frame: ${bitmap.width}x${bitmap.height} | crop=$cropRect | game=$gameModeEnabled")
+            saveDebugBitmap(bitmap)
 
-            // 4. Envia para OCR+Tradução na main thread (ML Kit exige)
             withContext(Dispatchers.Main) {
-                OcrProcessor.process(
-                    context  = this@FloatingService,
-                    bitmap   = fullBitmap,
-                    cropRect = cropRect
-                ) { results ->
+                OcrProcessor.process(this@FloatingService, bitmap, cropRect) { results ->
                     if (results.isEmpty()) {
-                        Toast.makeText(
-                            this@FloatingService,
-                            "🔍 Nenhum texto encontrado na área",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        Toast.makeText(this@FloatingService,
+                            "🔍 Nenhum texto encontrado", Toast.LENGTH_SHORT).show()
                     } else {
-                        GameOverlayManager.show(
-                            context       = this@FloatingService,
-                            windowManager = windowManager,
-                            results       = results
-                        )
+                        showResults(results, cropRect, isFullScreen)
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Decide qual overlay exibir com base no estado do mini-game.
+     */
+    private fun showResults(results: List<TextResult>, cropRect: Rect?, isFullScreen: Boolean) {
+        if (gameModeEnabled) {
+            // Mini-game: embaralha palavras
+            GameOverlayManager.gameModeEnabled = true
+            GameOverlayManager.show(
+                context        = this,
+                windowManager  = windowManager,
+                results        = results,
+                filterSystemUi = isFullScreen
+            )
+        } else {
+            // Tradução direta: sobrepõe o texto traduzido na posição original
+            TranslationOverlay.show(
+                context       = this,
+                windowManager = windowManager,
+                results       = results,
+                screenWidth   = screenWidth,
+                screenHeight  = screenHeight,
+                cropRect      = cropRect
+            )
         }
     }
 
@@ -367,20 +450,15 @@ class FloatingService : LifecycleService() {
     }
 
     private fun rebuildImageReader() {
-        virtualDisplay?.release()
-        imageReader?.close()
-
+        virtualDisplay?.release(); imageReader?.close()
         imageReader    = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
         frameAvailable = false
-
         imageReader?.setOnImageAvailableListener({ frameAvailable = true }, handler)
-
         virtualDisplay = mediaProjection?.createVirtualDisplay(
             "MangaLens", screenWidth, screenHeight, screenDensity,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader?.surface, null, null
         )
-        Log.d(TAG, "VirtualDisplay criado: ${screenWidth}x${screenHeight}")
     }
 
     private fun captureScreen(): Bitmap? {
@@ -391,17 +469,14 @@ class FloatingService : LifecycleService() {
             var c = reader.acquireLatestImage()
             while (c != null) { image?.close(); image = c; c = reader.acquireLatestImage() }
             val img = image ?: return null
-            val plane = img.planes[0]
+            val plane  = img.planes[0]
             val rowPad = plane.rowStride - plane.pixelStride * img.width
             val bmp = Bitmap.createBitmap(
                 img.width + rowPad / plane.pixelStride, img.height, Bitmap.Config.ARGB_8888)
             bmp.copyPixelsFromBuffer(plane.buffer)
             if (rowPad == 0) bmp else Bitmap.createBitmap(bmp, 0, 0, img.width, img.height)
-        } catch (e: Exception) {
-            Log.e(TAG, "captureScreen: ${e.message}"); null
-        } finally {
-            image?.close()
-        }
+        } catch (e: Exception) { Log.e(TAG, "captureScreen: ${e.message}"); null }
+        finally { image?.close() }
     }
 
     private fun tearDownProjection() {
@@ -413,7 +488,6 @@ class FloatingService : LifecycleService() {
         runCatching {
             val f = java.io.File(getExternalFilesDir(null), "debug_capture.png")
             java.io.FileOutputStream(f).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
-            Log.d(TAG, "Debug salvo: ${f.absolutePath}")
         }
     }
 
@@ -432,7 +506,7 @@ class FloatingService : LifecycleService() {
             PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("MangaLens ativo")
-            .setContentText("Toque longo para mudar o modo de captura")
+            .setContentText("Toque longo no botão para configurar")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .addAction(android.R.drawable.ic_delete, "Parar", pi)
             .build()
