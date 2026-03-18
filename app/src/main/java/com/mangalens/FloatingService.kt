@@ -30,7 +30,7 @@ class FloatingService : LifecycleService() {
     private lateinit var floatingRoot: View
     private lateinit var floatingBtn: TextView
     private lateinit var badgeLock: TextView
-    private lateinit var badgeMode: TextView   // badge de modo no canto inferior
+    private lateinit var badgeMode: TextView
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -42,25 +42,24 @@ class FloatingService : LifecycleService() {
     enum class CaptureMode { SINGLE, AREA, CONTINUOUS }
     private var captureMode = CaptureMode.SINGLE
 
-    // Estado da área
     private var lockedRect: Rect? = null
-    private var areaLocked = false
+    private var areaLocked        = false
+    private var gameModeEnabled   = true
 
-    // ── Toggle do mini-game ───────────────────────
-    // true  = mini-game (embaralha palavras)
-    // false = tradução direta sobreposta
-    private var gameModeEnabled = true
-    // Última área usada (para repassar ao TranslationOverlay)
-    private var lastCropRect: Rect? = null
-
-    private val continuousCapture = ContinuousCapture(intervalMs = 1_500L, changeThreshold = 0.04f)
+    private val continuousCapture = ContinuousCapture(
+        intervalMs         = 1_500L,
+        changeThreshold    = 0.03f,
+        overlayHideDelayMs = 150L   // ms de espera após esconder o overlay
+    )
 
     private val handler     = Handler(Looper.getMainLooper())
     private var isLongPress = false
     private val LONG_PRESS  = 500L
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    @Volatile private var frameAvailable = false
+
+    // Evita múltiplos pipelines OCR simultâneos no modo contínuo
+    @Volatile private var continuousOcrInProgress = false
 
     companion object {
         const val ACTION_START      = "START"
@@ -130,12 +129,6 @@ class FloatingService : LifecycleService() {
         updateButtonAppearance()
     }
 
-    /**
-     * Ícone e badges refletem o estado completo:
-     *  modo captura → ícone principal
-     *  mini-game    → badge "🎮" ou "📖" no canto inferior esquerdo
-     *  trava área   → badge "🔒" no canto superior direito
-     */
     private fun updateButtonAppearance() {
         val (icon, colorHex) = when (captureMode) {
             CaptureMode.SINGLE     -> "📷" to "#CC6200EE"
@@ -148,8 +141,6 @@ class FloatingService : LifecycleService() {
         else floatingBtn.setBackgroundColor(Color.parseColor(colorHex))
 
         badgeLock.visibility = if (areaLocked) View.VISIBLE else View.GONE
-
-        // Badge de modo de leitura
         badgeMode.text       = if (gameModeEnabled) "🎮" else "📖"
         badgeMode.visibility = View.VISIBLE
     }
@@ -191,28 +182,23 @@ class FloatingService : LifecycleService() {
     }
 
     // ─────────────────────────────────────────────
-    // MENU (toque longo)
+    // MENU
     // ─────────────────────────────────────────────
 
     private fun showModeMenu() {
         val singleLabel     = if (captureMode == CaptureMode.SINGLE)     "📷  Tela Cheia ✓"      else "📷  Tela Cheia"
         val areaLabel       = if (captureMode == CaptureMode.AREA)       "▲   Seleção de Área ✓" else "▲   Seleção de Área"
         val continuousLabel = if (captureMode == CaptureMode.CONTINUOUS) "🔄  Tempo Real ✓"       else "🔄  Tempo Real"
-
-        // Toggle do mini-game — sempre visível
-        val gameLabel = if (gameModeEnabled) "🎮  Mini-game  [LIGADO]  → toque para desligar"
-        else                  "📖  Tradução direta  [LIGADA]  → toque para ligar mini-game"
-
-        // Trava — só aparece no modo Área
-        val lockLabel = if (captureMode == CaptureMode.AREA) {
+        val gameLabel       = if (gameModeEnabled) "🎮  Mini-game [LIGADO] → desligar"
+        else                  "📖  Tradução direta [LIGADA] → ligar mini-game"
+        val lockLabel       = if (captureMode == CaptureMode.AREA) {
             if (areaLocked) "🔓  Destravar área" else "🔒  Travar área atual"
         } else null
 
         val options = listOfNotNull(
             singleLabel, areaLabel, continuousLabel,
-            "─────────────────",   // separador visual
-            gameLabel,
-            lockLabel
+            "─────────────────",
+            gameLabel, lockLabel
         ).toTypedArray()
 
         handler.post {
@@ -225,40 +211,31 @@ class FloatingService : LifecycleService() {
                         0 -> switchCaptureTo(CaptureMode.SINGLE)
                         1 -> switchCaptureTo(CaptureMode.AREA)
                         2 -> switchCaptureTo(CaptureMode.CONTINUOUS)
-                        3 -> { /* separador — ignora */ }
+                        3 -> { /* separador */ }
                         4 -> toggleGameMode()
                         5 -> if (lockLabel != null) toggleLock()
                     }
-                }
-                .create()
+                }.create()
             dlg.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
             dlg.show()
         }
     }
 
-    // ─────────────────────────────────────────────
-    // TOGGLE DO MINI-GAME
-    // ─────────────────────────────────────────────
-
     private fun toggleGameMode() {
         gameModeEnabled = !gameModeEnabled
         GameOverlayManager.gameModeEnabled = gameModeEnabled
         updateButtonAppearance()
-
-        val msg = if (gameModeEnabled)
-            "🎮 Mini-game ligado — monte a frase!"
-        else
-            "📖 Tradução direta ligada — leitura rápida"
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        Toast.makeText(this,
+            if (gameModeEnabled) "🎮 Mini-game ligado" else "📖 Tradução direta ligada",
+            Toast.LENGTH_SHORT).show()
     }
-
-    // ─────────────────────────────────────────────
-    // TROCA DE MODO DE CAPTURA
-    // ─────────────────────────────────────────────
 
     private fun switchCaptureTo(mode: CaptureMode) {
         if (captureMode == CaptureMode.CONTINUOUS && mode != CaptureMode.CONTINUOUS) {
             continuousCapture.stop()
+            continuousOcrInProgress = false
+            // Restaura overlay se estava escondido
+            TranslationOverlay.restore()
         }
         captureMode = mode
         when (mode) {
@@ -269,11 +246,11 @@ class FloatingService : LifecycleService() {
             }
             CaptureMode.AREA -> {
                 updateButtonAppearance()
-                Toast.makeText(this, "▲ Seleção de área — toque para desenhar", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "▲ Seleção de área", Toast.LENGTH_SHORT).show()
             }
             CaptureMode.CONTINUOUS -> {
                 updateButtonAppearance()
-                Toast.makeText(this, "🔄 Tempo Real — monitorando mudanças...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "🔄 Tempo Real — monitorando...", Toast.LENGTH_SHORT).show()
                 startContinuousMode()
             }
         }
@@ -301,25 +278,20 @@ class FloatingService : LifecycleService() {
 
     private fun onTap() {
         when (captureMode) {
-            CaptureMode.SINGLE -> {
-                Toast.makeText(this, "📸 Capturando...", Toast.LENGTH_SHORT).show()
-                captureAndProcess(cropRect = null, isFullScreen = true)
-            }
+            CaptureMode.SINGLE -> captureAndProcess(cropRect = null, isFullScreen = true)
             CaptureMode.AREA -> {
-                if (areaLocked && lockedRect != null) {
-                    Toast.makeText(this, "🔒 Área travada — capturando...", Toast.LENGTH_SHORT).show()
-                    captureAndProcess(cropRect = lockedRect, isFullScreen = false)
-                } else {
-                    openAreaSelector()
-                }
+                if (areaLocked && lockedRect != null) captureAndProcess(cropRect = lockedRect, isFullScreen = false)
+                else openAreaSelector()
             }
             CaptureMode.CONTINUOUS -> {
                 if (continuousCapture.isRunning) {
                     continuousCapture.stop()
-                    Toast.makeText(this, "⏸ Tempo Real pausado", Toast.LENGTH_SHORT).show()
+                    continuousOcrInProgress = false
+                    TranslationOverlay.restore()
+                    Toast.makeText(this, "⏸ Pausado", Toast.LENGTH_SHORT).show()
                 } else {
                     startContinuousMode()
-                    Toast.makeText(this, "▶️ Tempo Real retomado", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "▶️ Retomado", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -335,8 +307,6 @@ class FloatingService : LifecycleService() {
             windowManager  = windowManager,
             onAreaSelected = { rect ->
                 lockedRect = rect
-                Log.d(TAG, "Área selecionada: $rect")
-                Toast.makeText(this, "✂️ Capturando área...", Toast.LENGTH_SHORT).show()
                 captureAndProcess(cropRect = rect, isFullScreen = false)
             },
             onCancel = { Toast.makeText(this, "Seleção cancelada", Toast.LENGTH_SHORT).show() }
@@ -345,61 +315,114 @@ class FloatingService : LifecycleService() {
 
     // ─────────────────────────────────────────────
     // MODO CONTÍNUO
+    // O ciclo completo por iteração:
+    //  1. hide overlay
+    //  2. aguarda render
+    //  3. captura frame limpo
+    //  4. pixel-diff
+    //  5. se mudou → OCR → dedup texto → mostra overlay
+    //  6. se não mudou → restore overlay
     // ─────────────────────────────────────────────
 
     private fun startContinuousMode() {
         rebuildImageReader()
+        continuousOcrInProgress = false
+
         continuousCapture.start(
-            scope     = serviceScope,
-            cropRect  = lockedRect,
-            onCapture = { captureScreen() },
-            onChanged = { bitmap, crop ->
-                OcrProcessor.process(this, bitmap, crop) { results ->
-                    if (results.isNotEmpty()) showResults(results, crop, isFullScreen = false)
+            scope        = serviceScope,
+            cropRect     = lockedRect,
+
+            // Passo 1: esconde o overlay ANTES de capturar
+            onHideOverlay = {
+                withContext(Dispatchers.Main) {
+                    TranslationOverlay.hide()
+                    GameOverlayManager.hideForCapture()
                 }
             },
-            onIdle = { Log.d(TAG, "Contínuo: tela estável") }
+
+            // Passo 2: captura frame limpo (overlay já escondido)
+            onCapture = { captureScreenDirect() },
+
+            // Passo 3: há mudança visual → roda OCR com dedup de texto
+            onChanged = { bitmap, crop ->
+                if (continuousOcrInProgress) {
+                    // OCR anterior ainda em curso → restaura overlay e pula
+                    withContext(Dispatchers.Main) {
+                        TranslationOverlay.restore()
+                        GameOverlayManager.restoreForCapture()
+                    }
+                    return@start
+                }
+
+                continuousOcrInProgress = true
+
+                withContext(Dispatchers.Main) {
+                    OcrProcessor.process(this@FloatingService, bitmap, null) { results ->
+                        continuousOcrInProgress = false
+
+                        if (results.isEmpty()) {
+                            // Nenhum texto → restaura o que estava antes
+                            TranslationOverlay.restore()
+                            GameOverlayManager.restoreForCapture()
+                            return@process
+                        }
+
+                        // Deduplicação semântica: hash do texto em inglês
+                        val combinedText = results.joinToString("|") { it.originalText.trim() }
+                        if (!continuousCapture.isNewText(combinedText)) {
+                            // Mesmo texto da última captura → restaura overlay anterior
+                            TranslationOverlay.restore()
+                            GameOverlayManager.restoreForCapture()
+                            return@process
+                        }
+
+                        // Conteúdo novo → fecha overlay anterior e abre o novo
+                        Log.d(TAG, "Novo conteúdo — atualizando overlay")
+                        showResults(results, crop, isFullScreen = false)
+                    }
+                }
+            },
+
+            // Passo 4: sem mudança visual → restaura overlay
+            onRestoreOverlay = {
+                withContext(Dispatchers.Main) {
+                    TranslationOverlay.restore()
+                    GameOverlayManager.restoreForCapture()
+                }
+            },
+
+            onIdle = { Log.d(TAG, "Contínuo: ocioso") }
         )
     }
 
     // ─────────────────────────────────────────────
-    // PIPELINE PRINCIPAL
+    // PIPELINE PONTUAL
     // ─────────────────────────────────────────────
 
     private fun captureAndProcess(cropRect: Rect?, isFullScreen: Boolean) {
-        lastCropRect = cropRect
-
         serviceScope.launch(Dispatchers.IO) {
             withContext(Dispatchers.Main) { rebuildImageReader() }
 
             val deadline = System.currentTimeMillis() + 4_000L
-            while (!frameAvailable && System.currentTimeMillis() < deadline) delay(40)
+            while (imageReader?.let { it.acquireLatestImage()?.also { img -> img.close() } } == null
+                && System.currentTimeMillis() < deadline) {
+                delay(40)
+            }
+            delay(120)
 
-            if (!frameAvailable) {
+            val bitmap: Bitmap = captureScreenDirect() ?: run {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@FloatingService,
-                        "❌ Tela não capturada — tente novamente", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@FloatingService, "❌ Erro ao capturar", Toast.LENGTH_SHORT).show()
                 }
                 return@launch
             }
 
-            delay(80)
-
-            val bitmap: Bitmap = captureScreen() ?: run {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@FloatingService, "❌ Erro ao ler frame", Toast.LENGTH_SHORT).show()
-                }
-                return@launch
-            }
-
-            Log.d(TAG, "Frame: ${bitmap.width}x${bitmap.height} | crop=$cropRect | game=$gameModeEnabled")
             saveDebugBitmap(bitmap)
 
             withContext(Dispatchers.Main) {
                 OcrProcessor.process(this@FloatingService, bitmap, cropRect) { results ->
                     if (results.isEmpty()) {
-                        Toast.makeText(this@FloatingService,
-                            "🔍 Nenhum texto encontrado", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@FloatingService, "🔍 Nenhum texto encontrado", Toast.LENGTH_SHORT).show()
                     } else {
                         showResults(results, cropRect, isFullScreen)
                     }
@@ -408,12 +431,12 @@ class FloatingService : LifecycleService() {
         }
     }
 
-    /**
-     * Decide qual overlay exibir com base no estado do mini-game.
-     */
+    // ─────────────────────────────────────────────
+    // EXIBIÇÃO DE RESULTADOS
+    // ─────────────────────────────────────────────
+
     private fun showResults(results: List<TextResult>, cropRect: Rect?, isFullScreen: Boolean) {
         if (gameModeEnabled) {
-            // Mini-game: embaralha palavras
             GameOverlayManager.gameModeEnabled = true
             GameOverlayManager.show(
                 context        = this,
@@ -422,7 +445,8 @@ class FloatingService : LifecycleService() {
                 filterSystemUi = isFullScreen
             )
         } else {
-            // Tradução direta: sobrepõe o texto traduzido na posição original
+            // Fecha o overlay anterior antes de abrir o novo — evita sobreposição
+            TranslationOverlay.dismiss(windowManager)
             TranslationOverlay.show(
                 context       = this,
                 windowManager = windowManager,
@@ -443,27 +467,24 @@ class FloatingService : LifecycleService() {
         val pm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = pm.getMediaProjection(resultCode, data)
         val m = resources.displayMetrics
-        screenWidth   = m.widthPixels
-        screenHeight  = m.heightPixels
-        screenDensity = m.densityDpi
+        screenWidth = m.widthPixels; screenHeight = m.heightPixels; screenDensity = m.densityDpi
         rebuildImageReader()
     }
 
     private fun rebuildImageReader() {
         virtualDisplay?.release(); imageReader?.close()
-        imageReader    = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
-        frameAvailable = false
-        imageReader?.setOnImageAvailableListener({ frameAvailable = true }, handler)
+        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
+        imageReader?.setOnImageAvailableListener({}, handler)
         virtualDisplay = mediaProjection?.createVirtualDisplay(
             "MangaLens", screenWidth, screenHeight, screenDensity,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader?.surface, null, null
         )
+        Log.d(TAG, "VirtualDisplay: ${screenWidth}x${screenHeight}")
     }
 
-    private fun captureScreen(): Bitmap? {
+    private fun captureScreenDirect(): Bitmap? {
         val reader = imageReader ?: return null
-        frameAvailable = false
         var image: Image? = null
         return try {
             var c = reader.acquireLatestImage()

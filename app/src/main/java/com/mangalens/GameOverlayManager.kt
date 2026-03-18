@@ -15,7 +15,21 @@ object GameOverlayManager {
     private const val TAG = "MangaLens_Overlay"
 
     private var overlayView: View? = null
-    var gameModeEnabled = true   // pode ser alterado externamente se quiser toggle
+    var gameModeEnabled = true
+
+    // ─────────────────────────────────────────────
+    // HIDE / RESTORE para o ciclo de captura contínua
+    // Torna o overlay invisível sem removê-lo, para que o
+    // VirtualDisplay não capture o texto que o app escreveu.
+    // ─────────────────────────────────────────────
+
+    fun hideForCapture() {
+        overlayView?.visibility = View.INVISIBLE
+    }
+
+    fun restoreForCapture() {
+        overlayView?.visibility = View.VISIBLE
+    }
 
     // ─────────────────────────────────────────────
     // ZOOM DE ACESSIBILIDADE
@@ -30,13 +44,6 @@ object GameOverlayManager {
 
     // ─────────────────────────────────────────────
     // FILTRO DE BLOCOS
-    //
-    // filterSystemUi = true  → modo Tela Cheia:
-    //   corta 10% do topo (status bar + relógio) e 8% do rodapé (nav bar)
-    //
-    // filterSystemUi = false → modo Área ou Tempo Real:
-    //   não corta nada — o relógio permanece visível e os blocos
-    //   têm bounding box relativo ao recorte já aplicado no bitmap
     // ─────────────────────────────────────────────
 
     private fun filterAndSort(
@@ -55,10 +62,8 @@ object GameOverlayManager {
                 text.length >= 3 && !text.matches(Regex("""\d{1,2}:\d{2}.*"""))
             }
         } else {
-            // Sem filtro de sistema — apenas descarta vazios
             results.filter { r -> r.originalText.trim().length >= 2 }
         }
-
         return filtered.sortedBy { it.boundingBox?.top ?: Int.MAX_VALUE }
     }
 
@@ -70,8 +75,8 @@ object GameOverlayManager {
         context: Context,
         windowManager: WindowManager,
         results: List<TextResult>,
-        screenHeight: Int    = context.resources.displayMetrics.heightPixels,
-        filterSystemUi: Boolean = true   // default conservador para tela cheia
+        screenHeight: Int       = context.resources.displayMetrics.heightPixels,
+        filterSystemUi: Boolean = true
     ) {
         removeOverlay(windowManager)
 
@@ -84,11 +89,9 @@ object GameOverlayManager {
         val themedCtx = ContextThemeWrapper(context, R.style.Theme_MangaLens)
         val view = LayoutInflater.from(themedCtx).inflate(R.layout.layout_game_overlay, null)
 
-        // Safe zone do relógio: só ativa no modo tela cheia + zoom de acessibilidade
         val showSafeZone = filterSystemUi && isSystemZoomActive(context)
         view.findViewById<View>(R.id.clockSafeZone).visibility =
             if (showSafeZone) View.VISIBLE else View.GONE
-        if (showSafeZone) Log.d(TAG, "Safe zone ativa (zoom + tela cheia)")
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -104,11 +107,8 @@ object GameOverlayManager {
             val result  = filtered[currentIndex]
             val hasNext = currentIndex < filtered.lastIndex
 
-            if (gameModeEnabled) {
-                setupGameMode(view, result, hasNext) { currentIndex++; renderCurrent() }
-            } else {
-                setupTranslationMode(view, result, hasNext) { currentIndex++; renderCurrent() }
-            }
+            if (gameModeEnabled) setupGameMode(view, result, hasNext) { currentIndex++; renderCurrent() }
+            else                 setupTranslationMode(view, result, hasNext) { currentIndex++; renderCurrent() }
 
             view.findViewById<TextView>(R.id.tvProgress).apply {
                 text       = "${currentIndex + 1} / ${filtered.size}"
@@ -127,7 +127,7 @@ object GameOverlayManager {
     }
 
     // ─────────────────────────────────────────────
-    // MODO TRADUÇÃO
+    // MODO TRADUÇÃO (painel inferior)
     // ─────────────────────────────────────────────
 
     private fun setupTranslationMode(
@@ -138,11 +138,9 @@ object GameOverlayManager {
         view.findViewById<TextView>(R.id.btnSkip).visibility                  = View.GONE
 
         view.findViewById<TextView>(R.id.tvOriginal).apply {
-            text       = result.originalText
-            visibility = View.VISIBLE
+            text = result.originalText; visibility = View.VISIBLE
         }
         view.findViewById<TextView>(R.id.tvTranslation).text = result.translatedText
-
         setupNextButton(view, hasNext, onNext)
     }
 
@@ -163,10 +161,8 @@ object GameOverlayManager {
         val btnNext         = view.findViewById<TextView>(R.id.btnNext)
         val btnSkip         = view.findViewById<TextView>(R.id.btnSkip)
 
-        chipGroupAnswer.removeAllViews()
-        chipGroupWords.removeAllViews()
-        tvResult.visibility = View.GONE
-        btnNext.visibility  = View.GONE
+        chipGroupAnswer.removeAllViews(); chipGroupWords.removeAllViews()
+        tvResult.visibility = View.GONE; btnNext.visibility = View.GONE
         btnSkip.visibility  = View.VISIBLE
 
         val originalHint   = result.originalText
@@ -177,18 +173,14 @@ object GameOverlayManager {
         val words = sentenceToSort.split(" ").filter { it.isNotBlank() }
 
         if (words.size <= 1) {
-            tvResult.text       = "🇧🇷 $sentenceToSort"
-            tvResult.setTextColor(Color.WHITE)
-            tvResult.visibility = View.VISIBLE
-            btnSkip.visibility  = View.GONE
-            setupNextButton(view, hasNext, onNext)
-            return
+            tvResult.text = "🇧🇷 $sentenceToSort"; tvResult.setTextColor(Color.WHITE)
+            tvResult.visibility = View.VISIBLE; btnSkip.visibility = View.GONE
+            setupNextButton(view, hasNext, onNext); return
         }
 
         val available     = words.shuffled().toMutableList()
         val selected      = mutableListOf<String>()
         var challengeDone = false
-
         var refreshWords:  () -> Unit = {}
         var refreshAnswer: () -> Unit = {}
 
@@ -212,8 +204,7 @@ object GameOverlayManager {
                 chipGroupAnswer.addView(buildAnswerChip(view.context, word, !challengeDone) {
                     if (!challengeDone) {
                         selected.remove(word); available.add(word)
-                        tvResult.visibility = View.GONE
-                        btnNext.visibility  = View.GONE
+                        tvResult.visibility = View.GONE; btnNext.visibility = View.GONE
                         btnSkip.visibility  = View.VISIBLE
                         refreshWords(); refreshAnswer()
                     }
@@ -224,13 +215,11 @@ object GameOverlayManager {
         refreshWords()
 
         btnSkip.setOnClickListener {
-            challengeDone       = true
-            tvResult.text       = "💡 Resposta: $sentenceToSort"
+            challengeDone = true
+            tvResult.text = "💡 Resposta: $sentenceToSort"
             tvResult.setTextColor(Color.YELLOW)
-            tvResult.visibility = View.VISIBLE
-            btnSkip.visibility  = View.GONE
-            setupNextButton(view, hasNext, onNext)
-            refreshWords()
+            tvResult.visibility = View.VISIBLE; btnSkip.visibility = View.GONE
+            setupNextButton(view, hasNext, onNext); refreshWords()
         }
     }
 
@@ -238,23 +227,15 @@ object GameOverlayManager {
     // CHIPS
     // ─────────────────────────────────────────────
 
-    private fun buildAnswerChip(
-        context: Context, word: String, enabled: Boolean, onClick: () -> Unit
-    ): Chip = Chip(context).apply {
-        text        = word
-        isClickable = enabled
-        setChipBackgroundColorResource(android.R.color.holo_blue_light)
-        setTextColor(Color.WHITE)
-        setOnClickListener { onClick() }
-    }
+    private fun buildAnswerChip(ctx: Context, word: String, enabled: Boolean, onClick: () -> Unit) =
+        Chip(ctx).apply {
+            text = word; isClickable = enabled
+            setChipBackgroundColorResource(android.R.color.holo_blue_light)
+            setTextColor(Color.WHITE); setOnClickListener { onClick() }
+        }
 
-    private fun buildWordChip(
-        context: Context, word: String, onClick: () -> Unit
-    ): Chip = Chip(context).apply {
-        text        = word
-        isClickable = true
-        setOnClickListener { onClick() }
-    }
+    private fun buildWordChip(ctx: Context, word: String, onClick: () -> Unit) =
+        Chip(ctx).apply { text = word; isClickable = true; setOnClickListener { onClick() } }
 
     // ─────────────────────────────────────────────
     // VERIFICAÇÃO DE RESPOSTA
@@ -263,29 +244,26 @@ object GameOverlayManager {
     private fun checkAnswer(
         selected: List<String>, correct: List<String>,
         tvResult: TextView, translation: String,
-        view: View, hasNext: Boolean, onNext: () -> Unit,
-        onCorrect: () -> Unit
+        view: View, hasNext: Boolean, onNext: () -> Unit, onCorrect: () -> Unit
     ) {
         when {
             selected == correct -> {
                 onCorrect()
                 tvResult.text = "✅ Correto! 🇧🇷 $translation"
-                tvResult.setTextColor(Color.GREEN)
-                tvResult.visibility = View.VISIBLE
+                tvResult.setTextColor(Color.GREEN); tvResult.visibility = View.VISIBLE
                 view.findViewById<TextView>(R.id.btnSkip).visibility = View.GONE
                 setupNextButton(view, hasNext, onNext)
             }
             selected.size == correct.size -> {
                 tvResult.text = "❌ Quase! Toque nas palavras para reorganizar."
-                tvResult.setTextColor(Color.RED)
-                tvResult.visibility = View.VISIBLE
+                tvResult.setTextColor(Color.RED); tvResult.visibility = View.VISIBLE
             }
             else -> tvResult.visibility = View.GONE
         }
     }
 
     // ─────────────────────────────────────────────
-    // BOTÃO PRÓXIMA / CONCLUÍDO
+    // BOTÃO PRÓXIMA
     // ─────────────────────────────────────────────
 
     private fun setupNextButton(view: View, hasNext: Boolean, onNext: () -> Unit) {

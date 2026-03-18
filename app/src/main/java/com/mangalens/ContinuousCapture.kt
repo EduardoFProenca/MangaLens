@@ -6,93 +6,124 @@ import android.util.Log
 import kotlinx.coroutines.*
 
 /**
- * Gerencia o modo de captura contínua.
+ * Captura contínua com lógica anti-retroalimentação:
  *
- * Fluxo:
- *  1. A cada [intervalMs] ms captura um frame
- *  2. Calcula a diferença média de pixels vs. o frame anterior
- *  3. Se a diferença > [changeThreshold], aciona o OCR
- *  4. Para de processar se [maxConsecutiveNoChange] frames consecutivos
- *     não mostrarem mudança (economiza bateria)
+ * PROBLEMA RAIZ: o VirtualDisplay captura tudo que está na tela, incluindo
+ * o próprio overlay de tradução. O OCR então lê o texto em português que o
+ * app escreveu, e tenta traduzir de novo — criando camadas infinitas.
+ *
+ * SOLUÇÃO:
+ *  1. [onHideOverlay] é chamado ANTES de cada captura — esconde o overlay.
+ *  2. Aguarda [overlayHideDelayMs] para o sistema renderizar a tela sem overlay.
+ *  3. Captura o frame limpo.
+ *  4. [onShowOverlay] é chamado de volta se não houver conteúdo novo.
+ *  5. Deduplicação por hash de texto: se o OCR retornar o mesmo texto do
+ *     frame anterior, não atualiza o overlay.
  */
 class ContinuousCapture(
-    private val intervalMs:              Long  = 1_500L,   // intervalo entre capturas
-    private val changeThreshold:         Float = 0.04f,    // 4% de pixels diferentes
-    private val maxConsecutiveNoChange:  Int   = 10        // para após 15 s sem mudança
+    private val intervalMs:             Long  = 1_500L,
+    private val changeThreshold:        Float = 0.03f,
+    private val maxConsecutiveNoChange: Int   = 10,
+    private val overlayHideDelayMs:     Long  = 120L   // tempo para o sistema renderizar sem overlay
 ) {
     private val TAG = "MangaLens_Continuous"
 
     private var job: Job? = null
     private var lastBitmap: Bitmap? = null
+
+    // Hash do último texto extraído pelo OCR — deduplicação semântica
+    @Volatile var lastTextHash: Int = 0
+        private set
+
     private var noChangeCount = 0
 
     var isRunning: Boolean = false
         private set
 
     // ─────────────────────────────────────────────
-    // CONTROLE
+    // INÍCIO
     // ─────────────────────────────────────────────
 
     /**
-     * Inicia a captura contínua.
-     *
-     * @param cropRect    Região a monitorar (null = tela inteira)
-     * @param onCapture   Função chamada para capturar o frame atual
-     * @param onChanged   Chamado com o bitmap quando a tela muda
-     * @param onIdle      Chamado quando o monitor entra em modo ocioso
+     * @param onHideOverlay  Chamado antes de capturar — deve esconder o overlay de tradução
+     * @param onCapture      Captura e retorna o bitmap da tela (já sem overlay)
+     * @param onChanged      Chamado com o bitmap quando há mudança visual real
+     * @param onRestoreOverlay Chamado se o frame for descartado (sem mudança) — restaura overlay
+     * @param onIdle         Chamado quando entra em modo ocioso
      */
     fun start(
         scope: CoroutineScope,
         cropRect: Rect?,
+        onHideOverlay: suspend () -> Unit,
         onCapture: () -> Bitmap?,
-        onChanged: (Bitmap, Rect?) -> Unit,
+        onChanged: suspend (Bitmap, Rect?) -> Unit,
+        onRestoreOverlay: suspend () -> Unit = {},
         onIdle: () -> Unit = {}
     ) {
         stop()
         isRunning     = true
         noChangeCount = 0
         lastBitmap    = null
+        lastTextHash  = 0
 
-        Log.d(TAG, "Modo contínuo iniciado (intervalo=${intervalMs}ms, threshold=$changeThreshold)")
+        Log.d(TAG, "Iniciando — intervalo=${intervalMs}ms")
 
         job = scope.launch(Dispatchers.IO) {
+
+            // ── Primeiro frame imediato ───────────────────────────────────
+            onHideOverlay()
+            delay(overlayHideDelayMs)
+            val firstFrame = onCapture()
+            if (firstFrame != null) {
+                val region = cropRegion(firstFrame, cropRect)
+                lastBitmap = region
+                onChanged(region, cropRect)
+            } else {
+                onRestoreOverlay()
+            }
+
+            // ── Loop principal ────────────────────────────────────────────
             while (isActive && isRunning) {
                 delay(intervalMs)
 
-                val frame = onCapture() ?: continue
+                // 1. Esconde overlay ANTES de capturar
+                onHideOverlay()
+                delay(overlayHideDelayMs)  // aguarda render sem overlay
 
-                // Recorta se necessário
-                val region = if (cropRect != null) {
-                    Bitmap.createBitmap(
-                        frame,
-                        cropRect.left.coerceAtLeast(0),
-                        cropRect.top.coerceAtLeast(0),
-                        cropRect.width().coerceAtMost(frame.width  - cropRect.left.coerceAtLeast(0)),
-                        cropRect.height().coerceAtMost(frame.height - cropRect.top.coerceAtLeast(0))
-                    )
-                } else frame
+                // 2. Captura frame limpo
+                val frame = onCapture()
+                if (frame == null) {
+                    onRestoreOverlay()
+                    continue
+                }
 
-                val prev = lastBitmap
+                val region = cropRegion(frame, cropRect)
+                val prev   = lastBitmap
                 lastBitmap = region
 
-                if (prev == null) continue   // primeiro frame, sem comparação
+                // 3. Se não há frame anterior, processa direto
+                if (prev == null) {
+                    onChanged(region, cropRect)
+                    continue
+                }
 
-                val diff = computeChangeFraction(prev, region)
-                Log.d(TAG, "Diferença de frame: ${"%.2f".format(diff * 100)}%")
+                // 4. Pixel-diff: verifica se houve mudança visual
+                val diff = pixelChangeFraction(prev, region)
+                Log.d(TAG, "Pixel diff: ${"%.1f".format(diff * 100)}%")
 
                 if (diff >= changeThreshold) {
                     noChangeCount = 0
-                    Log.d(TAG, "Mudança detectada — acionando OCR")
-                    withContext(Dispatchers.Main) {
-                        onChanged(region, cropRect)
-                    }
+                    // Mudança visual detectada → deixa o OCR rodar
+                    onChanged(region, cropRect)
                 } else {
                     noChangeCount++
+                    // Sem mudança → restaura o overlay que foi escondido
+                    onRestoreOverlay()
+
                     if (noChangeCount >= maxConsecutiveNoChange) {
-                        Log.d(TAG, "Sem mudança por ${noChangeCount} ciclos — modo ocioso")
+                        Log.d(TAG, "Ocioso após $noChangeCount ciclos")
                         withContext(Dispatchers.Main) { onIdle() }
-                        // Reduz frequência para economizar bateria (1 check a cada 5 s)
-                        delay(5_000L - intervalMs)
+                        delay(4_000L)
                         noChangeCount = 0
                     }
                 }
@@ -102,52 +133,62 @@ class ContinuousCapture(
 
     fun stop() {
         job?.cancel()
-        job       = null
-        isRunning = false
-        lastBitmap = null
-        Log.d(TAG, "Modo contínuo parado")
+        job          = null
+        isRunning    = false
+        lastBitmap   = null
+        lastTextHash = 0
+        Log.d(TAG, "Parado")
     }
 
     // ─────────────────────────────────────────────
-    // DIFERENÇA DE PIXELS (amostragem rápida)
+    // DEDUPLICAÇÃO SEMÂNTICA
     // ─────────────────────────────────────────────
 
     /**
-     * Compara dois bitmaps por amostragem (a cada [step] pixels).
-     * Retorna a fração de pixels com diferença perceptível.
-     *
-     * É rápido (~2 ms) porque não analisa todos os pixels.
+     * Compara o texto recém-extraído com o da última captura.
+     * Retorna true se for conteúdo NOVO (deve exibir overlay).
+     * Retorna false se for o MESMO (descarta, não atualiza overlay).
      */
-    private fun computeChangeFraction(a: Bitmap, b: Bitmap, step: Int = 8): Float {
-        // Garante mesmas dimensões para comparação
+    fun isNewText(extractedText: String): Boolean {
+        val newHash = extractedText.trim().hashCode()
+        if (newHash == lastTextHash) {
+            Log.d(TAG, "Texto idêntico ao anterior — descartando (hash=$newHash)")
+            return false
+        }
+        lastTextHash = newHash
+        return true
+    }
+
+    // ─────────────────────────────────────────────
+    // UTILITÁRIOS
+    // ─────────────────────────────────────────────
+
+    private fun cropRegion(bitmap: Bitmap, crop: Rect?): Bitmap {
+        if (crop == null) return bitmap
+        val l = crop.left.coerceAtLeast(0)
+        val t = crop.top.coerceAtLeast(0)
+        val w = crop.width().coerceAtMost(bitmap.width - l).coerceAtLeast(1)
+        val h = crop.height().coerceAtMost(bitmap.height - t).coerceAtLeast(1)
+        return Bitmap.createBitmap(bitmap, l, t, w, h)
+    }
+
+    private fun pixelChangeFraction(a: Bitmap, b: Bitmap, step: Int = 10): Float {
         if (a.width != b.width || a.height != b.height) return 1f
-
-        var changed = 0
-        var total   = 0
-
-        val w = a.width
-        val h = a.height
-
+        var changed = 0; var total = 0
         var y = 0
-        while (y < h) {
+        while (y < a.height) {
             var x = 0
-            while (x < w) {
-                val pa = a.getPixel(x, y)
-                val pb = b.getPixel(x, y)
-
-                // Diferença absoluta por canal (R, G, B)
+            while (x < a.width) {
+                val pa = a.getPixel(x, y); val pb = b.getPixel(x, y)
                 val dr = Math.abs(((pa shr 16) and 0xFF) - ((pb shr 16) and 0xFF))
                 val dg = Math.abs(((pa shr 8)  and 0xFF) - ((pb shr 8)  and 0xFF))
-                val db = Math.abs((pa           and 0xFF) - (pb           and 0xFF))
-
-                // Limiar de 30/255 (~12%) por canal para considerar "mudou"
-                if (dr > 30 || dg > 30 || db > 30) changed++
+                val db = Math.abs((pa and 0xFF) - (pb and 0xFF))
+                if (dr > 25 || dg > 25 || db > 25) changed++
                 total++
                 x += step
             }
             y += step
         }
-
-        return if (total == 0) 0f else changed.toFloat() / total.toFloat()
+        return if (total == 0) 0f else changed.toFloat() / total
     }
 }
