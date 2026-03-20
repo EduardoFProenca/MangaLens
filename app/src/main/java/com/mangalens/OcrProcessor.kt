@@ -14,10 +14,11 @@ import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 
 data class TextResult(
-    val originalText: String,
+    val originalText: String,    // texto corrigido (enviado ao tradutor e ao mini-game)
     val translatedText: String,
     val boundingBox: Rect?,
-    val detectedLanguage: String = "und"
+    val detectedLanguage: String = "und",
+    val rawText: String = originalText  // texto exatamente como o OCR leu (para debug)
 )
 
 object OcrProcessor {
@@ -27,8 +28,8 @@ object OcrProcessor {
     private val recognizer: TextRecognizer =
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
-    private val translators  = mutableMapOf<String, Translator>()
-    private val modelReady   = mutableMapOf<String, Boolean>()
+    private val translators = mutableMapOf<String, Translator>()
+    private val modelReady  = mutableMapOf<String, Boolean>()
 
     // ─────────────────────────────────────────────
     // DOWNLOAD
@@ -67,15 +68,13 @@ object OcrProcessor {
         cropRect: Rect? = null,
         onResult: (List<TextResult>) -> Unit
     ) {
-        // Aplica recorte se fornecido
         val source: Bitmap = applyCrop(bitmap, cropRect)
-
-        Log.d(TAG, "OCR iniciando em ${source.width}x${source.height} | crop=$cropRect")
+        Log.d(TAG, "OCR iniciando em ${source.width}x${source.height}")
 
         recognizer.process(InputImage.fromBitmap(source, 0))
             .addOnSuccessListener { visionText ->
-                val raw = visionText.text.trim()
-                Log.d(TAG, "OCR completo — ${raw.length} chars: ${raw.take(200)}")
+                val rawFull = visionText.text.trim()
+                Log.d(TAG, "OCR raw: ${rawFull.take(200)}")
 
                 val blocks: List<Pair<String, Rect?>> = visionText.textBlocks
                     .map { Pair(it.text.trim(), it.boundingBox) }
@@ -84,17 +83,25 @@ object OcrProcessor {
                 Log.d(TAG, "Blocos brutos: ${blocks.size}")
 
                 if (blocks.isEmpty()) {
-                    Log.w(TAG, "Nenhum texto detectado")
-                    onResult(emptyList())
-                    return@addOnSuccessListener
+                    onResult(emptyList()); return@addOnSuccessListener
                 }
 
-                val merged: List<Pair<String, Rect?>> =
-                    mergeNearbyBlocks(blocks, source.height / 10)
-
+                val merged = mergeNearbyBlocks(blocks, source.height / 10)
                 Log.d(TAG, "Após merge: ${merged.size} blocos")
 
-                translateAll(merged, onResult)
+                // ── Aplica correção de caracteres antes de traduzir ──
+                val corrected = merged.map { (rawText, box) ->
+                    val fixedText = CharacterCorrector.correct(rawText)
+                    if (fixedText != rawText) {
+                        Log.d(TAG, "  Corrigido: \"$rawText\" → \"$fixedText\"")
+                    }
+                    Pair(fixedText, box)
+                }
+
+                // Guarda o texto bruto junto (para debug e exibição opcional)
+                val rawMap = merged.zip(corrected).associate { (orig, fix) -> fix.first to orig.first }
+
+                translateAll(corrected, rawMap, onResult)
             }
             .addOnFailureListener { e: Exception ->
                 Log.e(TAG, "OCR falhou: ${e.message}")
@@ -155,6 +162,7 @@ object OcrProcessor {
 
     private fun translateAll(
         blocks: List<Pair<String, Rect?>>,
+        rawMap: Map<String, String>,
         onResult: (List<TextResult>) -> Unit
     ) {
         if (blocks.isEmpty()) { onResult(emptyList()); return }
@@ -163,19 +171,18 @@ object OcrProcessor {
         var pending = blocks.size
 
         blocks.forEachIndexed { i: Int, (text: String, box: Rect?) ->
-            val isJa: Boolean    = containsJapanese(text)
-            val lang: String     = if (isJa) "ja" else "en"
-            val src: String      = if (isJa) TranslateLanguage.JAPANESE else TranslateLanguage.ENGLISH
-            val tgt: String      = TranslateLanguage.PORTUGUESE
-            val key: String      = "$src->$tgt"
+            val isJa: Boolean = containsJapanese(text)
+            val lang: String  = if (isJa) "ja" else "en"
+            val src: String   = if (isJa) TranslateLanguage.JAPANESE else TranslateLanguage.ENGLISH
+            val tgt: String   = TranslateLanguage.PORTUGUESE
+            val key: String   = "$src->$tgt"
+            val rawText       = rawMap[text] ?: text   // texto original do OCR
 
             Log.d(TAG, "  Bloco $i [$lang]: \"${text.take(60)}\"")
 
-            // Se o modelo não estiver baixado, retorna o original
             if (modelReady[key] != true) {
-                Log.w(TAG, "  Modelo $key não disponível — retornando original")
                 synchronized(out) {
-                    out[i] = TextResult(text, text, box, lang)
+                    out[i] = TextResult(text, text, box, lang, rawText)
                     if (--pending == 0) onResult(out.filterNotNull())
                 }
                 return@forEachIndexed
@@ -183,16 +190,15 @@ object OcrProcessor {
 
             getOrCreateTranslator(src, tgt).translate(text)
                 .addOnSuccessListener { translated: String ->
-                    Log.d(TAG, "  Traduzido $i: \"${translated.take(60)}\"")
                     synchronized(out) {
-                        out[i] = TextResult(text, translated, box, lang)
+                        out[i] = TextResult(text, translated, box, lang, rawText)
                         if (--pending == 0) onResult(out.filterNotNull())
                     }
                 }
                 .addOnFailureListener { e: Exception ->
                     Log.e(TAG, "  Falha tradução $i: ${e.message}")
                     synchronized(out) {
-                        out[i] = TextResult(text, text, box, lang)
+                        out[i] = TextResult(text, text, box, lang, rawText)
                         if (--pending == 0) onResult(out.filterNotNull())
                     }
                 }

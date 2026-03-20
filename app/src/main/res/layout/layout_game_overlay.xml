@@ -1,15 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-    OVERLAY DO MINI-GAME
-    ─────────────────────────────────────────────────────
-    Estrutura geral (de baixo para cima na tela):
-      • Cabeçalho: progresso + botão fechar
-      • Zona protegida do relógio (invisível, só reserva espaço)
-      • Container de tradução (modo normal)
-      • Container do game (modo mini-game)
-      • Rodapé: botões Pular / Próxima
-    ─────────────────────────────────────────────────────
--->
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -18,9 +7,7 @@
     android:background="#EE1A1A2E"
     android:padding="16dp">
 
-    <!-- ══════════════════════════════════════════
-         CABEÇALHO: progresso + fechar
-         ══════════════════════════════════════════ -->
+    <!-- ══ CABEÇALHO ══ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -48,13 +35,7 @@
 
     </LinearLayout>
 
-    <!-- ══════════════════════════════════════════
-         ZONA PROTEGIDA DO RELÓGIO
-         Reserva 28dp de espaço no topo do overlay
-         para evitar que o horário do sistema
-         (especialmente com zoom ativo) sobreponha
-         o conteúdo do jogo.
-         ══════════════════════════════════════════ -->
+    <!-- ══ SAFE ZONE DO RELÓGIO ══ -->
     <View
         android:id="@+id/clockSafeZone"
         android:layout_width="match_parent"
@@ -62,9 +43,7 @@
         android:background="#22FFFFFF"
         android:visibility="gone" />
 
-    <!-- ══════════════════════════════════════════
-         MODO TRADUÇÃO
-         ══════════════════════════════════════════ -->
+    <!-- ══ MODO TRADUÇÃO ══ -->
     <LinearLayout
         android:id="@+id/containerTranslation"
         android:layout_width="match_parent"
@@ -92,9 +71,7 @@
 
     </LinearLayout>
 
-    <!-- ══════════════════════════════════════════
-         MODO GAME
-         ══════════════════════════════════════════ -->
+    <!-- ══ MODO GAME ══ -->
     <LinearLayout
         android:id="@+id/containerGame"
         android:layout_width="match_parent"
@@ -102,7 +79,6 @@
         android:orientation="vertical"
         android:visibility="gone">
 
-        <!-- Dica: texto original -->
         <TextView
             android:id="@+id/tvInstruction"
             android:layout_width="match_parent"
@@ -112,16 +88,12 @@
             android:lineSpacingMultiplier="1.3"
             android:layout_marginBottom="8dp" />
 
-        <!-- ── Área de RESPOSTA (chips selecionados) ── -->
-        <!-- ScrollView horizontal para linhas muito longas -->
         <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:scrollbars="none"
             android:overScrollMode="never">
 
-            <!-- ChipGroup dentro de ScrollView horizontal:
-                 permite rolar se a frase formada for longa demais -->
             <com.google.android.material.chip.ChipGroup
                 android:id="@+id/chipGroupAnswer"
                 android:layout_width="wrap_content"
@@ -140,9 +112,6 @@
             android:background="#555555"
             android:layout_marginVertical="8dp" />
 
-        <!-- ── Palavras DISPONÍVEIS ──
-             ScrollView vertical com altura máxima para não
-             estourar a tela quando há muitas palavras/palavras longas -->
         <ScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -159,7 +128,6 @@
 
         </ScrollView>
 
-        <!-- Feedback: correto / errado / pulo -->
         <TextView
             android:id="@+id/tvResult"
             android:layout_width="match_parent"
@@ -170,9 +138,45 @@
 
     </LinearLayout>
 
-    <!-- ══════════════════════════════════════════
-         RODAPÉ: Pular + Próxima frase
-         ══════════════════════════════════════════ -->
+    <!-- ══ BOTÕES DE CÓPIA ══
+         Aparecem no modo tradução sempre, e no modo game após acerto/pulo -->
+    <LinearLayout
+        android:id="@+id/containerCopyButtons"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="start"
+        android:layout_marginTop="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/btnCopyOriginal"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📋 EN"
+            android:textColor="#AAAAFF"
+            android:textSize="12sp"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="6dp"
+            android:background="#33FFFFFF"
+            android:layout_marginEnd="8dp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/btnCopyTranslation"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🌐 PT"
+            android:textColor="#AAFFAA"
+            android:textSize="12sp"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="6dp"
+            android:background="#33FFFFFF"
+            android:visibility="gone" />
+
+    </LinearLayout>
+
+    <!-- ══ RODAPÉ: Pular + Próxima frase ══ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
