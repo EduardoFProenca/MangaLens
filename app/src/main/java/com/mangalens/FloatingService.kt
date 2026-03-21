@@ -39,7 +39,8 @@ class FloatingService : LifecycleService() {
     private var screenHeight  = 0
     private var screenDensity = 0
 
-    enum class CaptureMode { SINGLE, AREA, CONTINUOUS }
+    // ── Quatro modos de captura ───────────────────
+    enum class CaptureMode { SINGLE, AREA, CONTINUOUS, GOOGLE_LENS }
     private var captureMode = CaptureMode.SINGLE
 
     private var lockedRect: Rect? = null
@@ -49,7 +50,7 @@ class FloatingService : LifecycleService() {
     private val continuousCapture = ContinuousCapture(
         intervalMs         = 1_500L,
         changeThreshold    = 0.03f,
-        overlayHideDelayMs = 150L   // ms de espera após esconder o overlay
+        overlayHideDelayMs = 150L
     )
 
     private val handler     = Handler(Looper.getMainLooper())
@@ -57,8 +58,6 @@ class FloatingService : LifecycleService() {
     private val LONG_PRESS  = 500L
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-
-    // Evita múltiplos pipelines OCR simultâneos no modo contínuo
     @Volatile private var continuousOcrInProgress = false
 
     companion object {
@@ -129,11 +128,19 @@ class FloatingService : LifecycleService() {
         updateButtonAppearance()
     }
 
+    /**
+     * Cada modo tem ícone e cor únicos:
+     *  📷 roxo   → Tela Cheia
+     *  ▲  laranja → Seleção de Área
+     *  🔄 verde   → Tempo Real
+     *  🔍 azul    → Google Lens  ← novo
+     */
     private fun updateButtonAppearance() {
         val (icon, colorHex) = when (captureMode) {
-            CaptureMode.SINGLE     -> "📷" to "#CC6200EE"
-            CaptureMode.AREA       -> "▲"  to "#CCE65100"
-            CaptureMode.CONTINUOUS -> "🔄" to "#CC00796B"
+            CaptureMode.SINGLE      -> "📷" to "#CC6200EE"
+            CaptureMode.AREA        -> "▲"  to "#CCE65100"
+            CaptureMode.CONTINUOUS  -> "🔄" to "#CC00796B"
+            CaptureMode.GOOGLE_LENS -> "🔍" to "#CC1565C0"   // azul Google
         }
         floatingBtn.text = icon
         val bg = floatingBtn.background
@@ -142,7 +149,8 @@ class FloatingService : LifecycleService() {
 
         badgeLock.visibility = if (areaLocked) View.VISIBLE else View.GONE
         badgeMode.text       = if (gameModeEnabled) "🎮" else "📖"
-        badgeMode.visibility = View.VISIBLE
+        // No modo Lens não mostra badge de jogo (não se aplica)
+        badgeMode.visibility = if (captureMode == CaptureMode.GOOGLE_LENS) View.GONE else View.VISIBLE
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -182,43 +190,82 @@ class FloatingService : LifecycleService() {
     }
 
     // ─────────────────────────────────────────────
-    // MENU
+    // MENU (toque longo)
     // ─────────────────────────────────────────────
 
     private fun showModeMenu() {
-        val singleLabel     = if (captureMode == CaptureMode.SINGLE)     "📷  Tela Cheia ✓"      else "📷  Tela Cheia"
-        val areaLabel       = if (captureMode == CaptureMode.AREA)       "▲   Seleção de Área ✓" else "▲   Seleção de Área"
-        val continuousLabel = if (captureMode == CaptureMode.CONTINUOUS) "🔄  Tempo Real ✓"       else "🔄  Tempo Real"
-        val gameLabel       = if (gameModeEnabled) "🎮  Mini-game [LIGADO] → desligar"
+        // Marca o modo ativo com ✓
+        fun label(mode: CaptureMode, text: String) =
+            if (captureMode == mode) "$text ✓" else text
+
+        val singleLabel = label(CaptureMode.SINGLE,      "📷  Tela Cheia")
+        val areaLabel   = label(CaptureMode.AREA,        "▲   Seleção de Área")
+        val contLabel   = label(CaptureMode.CONTINUOUS,  "🔄  Tempo Real")
+        val lensLabel   = label(CaptureMode.GOOGLE_LENS, "🔍  Google Lens")
+
+        val gameLabel = if (gameModeEnabled) "🎮  Mini-game [LIGADO] → desligar"
         else                  "📖  Tradução direta [LIGADA] → ligar mini-game"
-        val lockLabel       = if (captureMode == CaptureMode.AREA) {
+
+        val lockLabel = if (captureMode == CaptureMode.AREA) {
             if (areaLocked) "🔓  Destravar área" else "🔒  Travar área atual"
         } else null
 
         val options = listOfNotNull(
-            singleLabel, areaLabel, continuousLabel,
-            "─────────────────",
-            gameLabel, lockLabel
+            singleLabel,            // 0
+            areaLabel,              // 1
+            contLabel,              // 2
+            lensLabel,              // 3
+            "─────────────────",   // 4  separador
+            gameLabel,              // 5
+            lockLabel               // 6 (só no modo AREA)
         ).toTypedArray()
 
         handler.post {
             val dlg = android.app.AlertDialog.Builder(
                 android.view.ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault_Dialog)
             )
-                .setTitle("MangaLens — Configurações")
+                .setTitle("MangaLens — Modo de captura")
                 .setItems(options) { _, which ->
                     when (which) {
                         0 -> switchCaptureTo(CaptureMode.SINGLE)
                         1 -> switchCaptureTo(CaptureMode.AREA)
                         2 -> switchCaptureTo(CaptureMode.CONTINUOUS)
-                        3 -> { /* separador */ }
-                        4 -> toggleGameMode()
-                        5 -> if (lockLabel != null) toggleLock()
+                        3 -> switchCaptureTo(CaptureMode.GOOGLE_LENS)
+                        4 -> { /* separador */ }
+                        5 -> toggleGameMode()
+                        6 -> if (lockLabel != null) toggleLock()
                     }
                 }.create()
             dlg.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
             dlg.show()
         }
+    }
+
+    // ─────────────────────────────────────────────
+    // TROCA DE MODO
+    // ─────────────────────────────────────────────
+
+    private fun switchCaptureTo(mode: CaptureMode) {
+        // Para o modo contínuo se estava rodando
+        if (captureMode == CaptureMode.CONTINUOUS && mode != CaptureMode.CONTINUOUS) {
+            continuousCapture.stop()
+            continuousOcrInProgress = false
+            TranslationOverlay.restore()
+        }
+
+        captureMode = mode
+        updateButtonAppearance()
+
+        val msg = when (mode) {
+            CaptureMode.SINGLE      -> "📷 Tela cheia — toque para capturar"
+            CaptureMode.AREA        -> "▲ Seleção de área — toque para desenhar"
+            CaptureMode.CONTINUOUS  -> "🔄 Tempo Real — iniciando..."
+            CaptureMode.GOOGLE_LENS -> "🔍 Google Lens ativo — toque para traduzir com o Google"
+        }
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+        if (mode == CaptureMode.SINGLE) { areaLocked = false; lockedRect = null }
+        if (mode == CaptureMode.CONTINUOUS) startContinuousMode()
     }
 
     private fun toggleGameMode() {
@@ -230,32 +277,6 @@ class FloatingService : LifecycleService() {
             Toast.LENGTH_SHORT).show()
     }
 
-    private fun switchCaptureTo(mode: CaptureMode) {
-        if (captureMode == CaptureMode.CONTINUOUS && mode != CaptureMode.CONTINUOUS) {
-            continuousCapture.stop()
-            continuousOcrInProgress = false
-            // Restaura overlay se estava escondido
-            TranslationOverlay.restore()
-        }
-        captureMode = mode
-        when (mode) {
-            CaptureMode.SINGLE -> {
-                areaLocked = false; lockedRect = null
-                updateButtonAppearance()
-                Toast.makeText(this, "📷 Tela cheia", Toast.LENGTH_SHORT).show()
-            }
-            CaptureMode.AREA -> {
-                updateButtonAppearance()
-                Toast.makeText(this, "▲ Seleção de área", Toast.LENGTH_SHORT).show()
-            }
-            CaptureMode.CONTINUOUS -> {
-                updateButtonAppearance()
-                Toast.makeText(this, "🔄 Tempo Real — monitorando...", Toast.LENGTH_SHORT).show()
-                startContinuousMode()
-            }
-        }
-    }
-
     private fun toggleLock() {
         if (areaLocked) {
             areaLocked = false; lockedRect = null
@@ -263,8 +284,7 @@ class FloatingService : LifecycleService() {
             Toast.makeText(this, "🔓 Área destravada", Toast.LENGTH_SHORT).show()
         } else {
             if (lockedRect != null) {
-                areaLocked = true
-                updateButtonAppearance()
+                areaLocked = true; updateButtonAppearance()
                 Toast.makeText(this, "🔒 Área travada!", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, "Selecione uma área primeiro", Toast.LENGTH_SHORT).show()
@@ -273,26 +293,65 @@ class FloatingService : LifecycleService() {
     }
 
     // ─────────────────────────────────────────────
-    // TOQUE SIMPLES
+    // TOQUE SIMPLES — respeita o modo ativo
     // ─────────────────────────────────────────────
 
     private fun onTap() {
         when (captureMode) {
             CaptureMode.SINGLE -> captureAndProcess(cropRect = null, isFullScreen = true)
+
             CaptureMode.AREA -> {
                 if (areaLocked && lockedRect != null) captureAndProcess(cropRect = lockedRect, isFullScreen = false)
                 else openAreaSelector()
             }
+
             CaptureMode.CONTINUOUS -> {
                 if (continuousCapture.isRunning) {
-                    continuousCapture.stop()
-                    continuousOcrInProgress = false
+                    continuousCapture.stop(); continuousOcrInProgress = false
                     TranslationOverlay.restore()
                     Toast.makeText(this, "⏸ Pausado", Toast.LENGTH_SHORT).show()
                 } else {
                     startContinuousMode()
                     Toast.makeText(this, "▶️ Retomado", Toast.LENGTH_SHORT).show()
                 }
+            }
+
+            // ← novo: toque direto abre o Google Lens com a tela atual
+            CaptureMode.GOOGLE_LENS -> triggerGoogleLens()
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // GOOGLE LENS — captura tela e envia ao Lens
+    // ─────────────────────────────────────────────
+
+    private fun triggerGoogleLens() {
+        serviceScope.launch(Dispatchers.IO) {
+            // Esconde overlays para ter uma captura limpa
+            withContext(Dispatchers.Main) {
+                TranslationOverlay.hide()
+                GameOverlayManager.hideForCapture()
+            }
+            delay(180L)
+
+            val bitmap = captureScreenDirect()
+
+            // Restaura overlays independente do resultado
+            withContext(Dispatchers.Main) {
+                TranslationOverlay.restore()
+                GameOverlayManager.restoreForCapture()
+            }
+
+            if (bitmap == null) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@FloatingService,
+                        "❌ Não foi possível capturar a tela", Toast.LENGTH_SHORT).show()
+                }
+                return@launch
+            }
+
+            withContext(Dispatchers.Main) {
+                GoogleLensHelper.openWithScreenshot(this@FloatingService, bitmap)
             }
         }
     }
@@ -315,13 +374,6 @@ class FloatingService : LifecycleService() {
 
     // ─────────────────────────────────────────────
     // MODO CONTÍNUO
-    // O ciclo completo por iteração:
-    //  1. hide overlay
-    //  2. aguarda render
-    //  3. captura frame limpo
-    //  4. pixel-diff
-    //  5. se mudou → OCR → dedup texto → mostra overlay
-    //  6. se não mudou → restore overlay
     // ─────────────────────────────────────────────
 
     private fun startContinuousMode() {
@@ -329,68 +381,44 @@ class FloatingService : LifecycleService() {
         continuousOcrInProgress = false
 
         continuousCapture.start(
-            scope        = serviceScope,
-            cropRect     = lockedRect,
-
-            // Passo 1: esconde o overlay ANTES de capturar
+            scope         = serviceScope,
+            cropRect      = lockedRect,
             onHideOverlay = {
                 withContext(Dispatchers.Main) {
                     TranslationOverlay.hide()
                     GameOverlayManager.hideForCapture()
                 }
             },
-
-            // Passo 2: captura frame limpo (overlay já escondido)
-            onCapture = { captureScreenDirect() },
-
-            // Passo 3: há mudança visual → roda OCR com dedup de texto
-            onChanged = { bitmap, crop ->
+            onCapture     = { captureScreenDirect() },
+            onChanged     = { bitmap, crop ->
                 if (continuousOcrInProgress) {
-                    // OCR anterior ainda em curso → restaura overlay e pula
                     withContext(Dispatchers.Main) {
-                        TranslationOverlay.restore()
-                        GameOverlayManager.restoreForCapture()
+                        TranslationOverlay.restore(); GameOverlayManager.restoreForCapture()
                     }
                     return@start
                 }
-
                 continuousOcrInProgress = true
-
                 withContext(Dispatchers.Main) {
                     OcrProcessor.process(this@FloatingService, bitmap, null) { results ->
                         continuousOcrInProgress = false
-
                         if (results.isEmpty()) {
-                            // Nenhum texto → restaura o que estava antes
-                            TranslationOverlay.restore()
-                            GameOverlayManager.restoreForCapture()
+                            TranslationOverlay.restore(); GameOverlayManager.restoreForCapture()
                             return@process
                         }
-
-                        // Deduplicação semântica: hash do texto em inglês
                         val combinedText = results.joinToString("|") { it.originalText.trim() }
                         if (!continuousCapture.isNewText(combinedText)) {
-                            // Mesmo texto da última captura → restaura overlay anterior
-                            TranslationOverlay.restore()
-                            GameOverlayManager.restoreForCapture()
+                            TranslationOverlay.restore(); GameOverlayManager.restoreForCapture()
                             return@process
                         }
-
-                        // Conteúdo novo → fecha overlay anterior e abre o novo
-                        Log.d(TAG, "Novo conteúdo — atualizando overlay")
                         showResults(results, crop, isFullScreen = false)
                     }
                 }
             },
-
-            // Passo 4: sem mudança visual → restaura overlay
             onRestoreOverlay = {
                 withContext(Dispatchers.Main) {
-                    TranslationOverlay.restore()
-                    GameOverlayManager.restoreForCapture()
+                    TranslationOverlay.restore(); GameOverlayManager.restoreForCapture()
                 }
             },
-
             onIdle = { Log.d(TAG, "Contínuo: ocioso") }
         )
     }
@@ -405,9 +433,7 @@ class FloatingService : LifecycleService() {
 
             val deadline = System.currentTimeMillis() + 4_000L
             while (imageReader?.let { it.acquireLatestImage()?.also { img -> img.close() } } == null
-                && System.currentTimeMillis() < deadline) {
-                delay(40)
-            }
+                && System.currentTimeMillis() < deadline) { delay(40) }
             delay(120)
 
             val bitmap: Bitmap = captureScreenDirect() ?: run {
@@ -438,23 +464,13 @@ class FloatingService : LifecycleService() {
     private fun showResults(results: List<TextResult>, cropRect: Rect?, isFullScreen: Boolean) {
         if (gameModeEnabled) {
             GameOverlayManager.gameModeEnabled = true
-            GameOverlayManager.show(
-                context        = this,
-                windowManager  = windowManager,
-                results        = results,
-                filterSystemUi = isFullScreen
-            )
+            GameOverlayManager.show(context = this, windowManager = windowManager,
+                results = results, filterSystemUi = isFullScreen)
         } else {
-            // Fecha o overlay anterior antes de abrir o novo — evita sobreposição
             TranslationOverlay.dismiss(windowManager)
-            TranslationOverlay.show(
-                context       = this,
-                windowManager = windowManager,
-                results       = results,
-                screenWidth   = screenWidth,
-                screenHeight  = screenHeight,
-                cropRect      = cropRect
-            )
+            TranslationOverlay.show(context = this, windowManager = windowManager,
+                results = results, screenWidth = screenWidth,
+                screenHeight = screenHeight, cropRect = cropRect)
         }
     }
 
@@ -480,7 +496,6 @@ class FloatingService : LifecycleService() {
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader?.surface, null, null
         )
-        Log.d(TAG, "VirtualDisplay: ${screenWidth}x${screenHeight}")
     }
 
     private fun captureScreenDirect(): Bitmap? {

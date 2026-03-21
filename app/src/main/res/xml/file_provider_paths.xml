@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Define quais diretórios o FileProvider pode expor.
+    O GoogleLensHelper salva a screenshot em context.cacheDir,
+    que é mapeado aqui como "cache" com path="."
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path
+        name="lens_cache"
+        path="." />
+</paths>

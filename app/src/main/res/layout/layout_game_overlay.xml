@@ -138,36 +138,99 @@
 
     </LinearLayout>
 
-    <!-- ══ BOTÕES DE CÓPIA ══
-         Aparecem no modo tradução sempre, e no modo game após acerto/pulo -->
+    <!-- ══ BARRA DE AÇÕES ══
+         Linha 1: Cópia | Editar PT
+         Linha 2: Editar EN original | Editar frase do jogo
+    -->
+
+    <!-- Linha 1: cópia + editar tradução PT -->
     <LinearLayout
-        android:id="@+id/containerCopyButtons"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:gravity="start"
-        android:layout_marginTop="8dp"
-        android:visibility="gone">
+        android:gravity="start|center_vertical"
+        android:layout_marginTop="8dp">
 
+        <LinearLayout
+            android:id="@+id/containerCopyButtons"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/btnCopyOriginal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="📋 EN"
+                android:textColor="#AAAAFF"
+                android:textSize="12sp"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="6dp"
+                android:background="#33FFFFFF"
+                android:layout_marginEnd="6dp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/btnCopyTranslation"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🌐 PT"
+                android:textColor="#AAFFAA"
+                android:textSize="12sp"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="6dp"
+                android:background="#33FFFFFF"
+                android:visibility="gone" />
+
+        </LinearLayout>
+
+        <!-- Editar tradução PT (modo tradução) -->
         <TextView
-            android:id="@+id/btnCopyOriginal"
+            android:id="@+id/btnEditTranslation"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="📋 EN"
-            android:textColor="#AAAAFF"
+            android:text="✏️ PT"
+            android:textColor="#FFDD88"
             android:textSize="12sp"
             android:paddingHorizontal="10dp"
             android:paddingVertical="6dp"
             android:background="#33FFFFFF"
-            android:layout_marginEnd="8dp"
+            android:layout_marginStart="4dp"
             android:visibility="gone" />
 
+    </LinearLayout>
+
+    <!-- Linha 2: editar EN + editar frase do jogo -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="start|center_vertical"
+        android:layout_marginTop="4dp">
+
+        <!-- Editar texto original EN (ambos os modos) -->
         <TextView
-            android:id="@+id/btnCopyTranslation"
+            android:id="@+id/btnEditOriginal"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="🌐 PT"
-            android:textColor="#AAFFAA"
+            android:text="✏️ EN"
+            android:textColor="#88CCFF"
+            android:textSize="12sp"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="6dp"
+            android:background="#33FFFFFF"
+            android:layout_marginEnd="6dp"
+            android:visibility="gone" />
+
+        <!-- Editar frase PT do mini-game (só no modo game) -->
+        <TextView
+            android:id="@+id/btnEditGameSentence"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="✏️ Frase do jogo"
+            android:textColor="#FFAA66"
             android:textSize="12sp"
             android:paddingHorizontal="10dp"
             android:paddingVertical="6dp"
@@ -176,7 +239,7 @@
 
     </LinearLayout>
 
-    <!-- ══ RODAPÉ: Pular + Próxima frase ══ -->
+    <!-- ══ RODAPÉ ══ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

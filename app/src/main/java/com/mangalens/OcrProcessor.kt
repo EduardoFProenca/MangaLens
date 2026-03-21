@@ -14,11 +14,11 @@ import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 
 data class TextResult(
-    val originalText: String,    // texto corrigido (enviado ao tradutor e ao mini-game)
+    val originalText: String,
     val translatedText: String,
     val boundingBox: Rect?,
     val detectedLanguage: String = "und",
-    val rawText: String = originalText  // texto exatamente como o OCR leu (para debug)
+    val rawText: String = originalText
 )
 
 object OcrProcessor {
@@ -59,6 +59,38 @@ object OcrProcessor {
     fun downloadModelIfNeeded(onReady: () -> Unit) = downloadModelsIfNeeded(onReady)
 
     // ─────────────────────────────────────────────
+    // RE-TRADUÇÃO APÓS EDIÇÃO DO ORIGINAL
+    // ─────────────────────────────────────────────
+
+    /**
+     * Traduz um texto avulso (após o usuário corrigir o original EN).
+     * Detecta automaticamente se é japonês ou inglês.
+     * Chama [onResult] com o texto traduzido (ou o próprio texto se falhar).
+     */
+    fun retranslate(text: String, onResult: (String) -> Unit) {
+        val isJa  = containsJapanese(text)
+        val src   = if (isJa) TranslateLanguage.JAPANESE else TranslateLanguage.ENGLISH
+        val tgt   = TranslateLanguage.PORTUGUESE
+        val key   = "$src->$tgt"
+
+        if (modelReady[key] != true) {
+            Log.w(TAG, "retranslate: modelo $key não disponível")
+            onResult(text)   // fallback: retorna o próprio texto corrigido sem traduzir
+            return
+        }
+
+        getOrCreateTranslator(src, tgt).translate(text)
+            .addOnSuccessListener { translated ->
+                Log.d(TAG, "retranslate: \"$text\" → \"$translated\"")
+                onResult(translated)
+            }
+            .addOnFailureListener { e ->
+                Log.e(TAG, "retranslate falhou: ${e.message}")
+                onResult(text)
+            }
+    }
+
+    // ─────────────────────────────────────────────
     // PROCESSO PRINCIPAL
     // ─────────────────────────────────────────────
 
@@ -69,38 +101,27 @@ object OcrProcessor {
         onResult: (List<TextResult>) -> Unit
     ) {
         val source: Bitmap = applyCrop(bitmap, cropRect)
-        Log.d(TAG, "OCR iniciando em ${source.width}x${source.height}")
+        Log.d(TAG, "OCR em ${source.width}x${source.height}")
 
         recognizer.process(InputImage.fromBitmap(source, 0))
             .addOnSuccessListener { visionText ->
-                val rawFull = visionText.text.trim()
-                Log.d(TAG, "OCR raw: ${rawFull.take(200)}")
+                val raw = visionText.text.trim()
+                Log.d(TAG, "OCR raw: ${raw.take(200)}")
 
                 val blocks: List<Pair<String, Rect?>> = visionText.textBlocks
                     .map { Pair(it.text.trim(), it.boundingBox) }
                     .filter { it.first.isNotBlank() }
 
-                Log.d(TAG, "Blocos brutos: ${blocks.size}")
+                if (blocks.isEmpty()) { onResult(emptyList()); return@addOnSuccessListener }
 
-                if (blocks.isEmpty()) {
-                    onResult(emptyList()); return@addOnSuccessListener
-                }
-
-                val merged = mergeNearbyBlocks(blocks, source.height / 10)
-                Log.d(TAG, "Após merge: ${merged.size} blocos")
-
-                // ── Aplica correção de caracteres antes de traduzir ──
+                val merged    = mergeNearbyBlocks(blocks, source.height / 10)
                 val corrected = merged.map { (rawText, box) ->
-                    val fixedText = CharacterCorrector.correct(rawText)
-                    if (fixedText != rawText) {
-                        Log.d(TAG, "  Corrigido: \"$rawText\" → \"$fixedText\"")
-                    }
-                    Pair(fixedText, box)
+                    val fixed = CharacterCorrector.correct(rawText)
+                    if (fixed != rawText) Log.d(TAG, "Corrigido: \"$rawText\" → \"$fixed\"")
+                    Pair(fixed, box)
                 }
 
-                // Guarda o texto bruto junto (para debug e exibição opcional)
                 val rawMap = merged.zip(corrected).associate { (orig, fix) -> fix.first to orig.first }
-
                 translateAll(corrected, rawMap, onResult)
             }
             .addOnFailureListener { e: Exception ->
@@ -123,33 +144,29 @@ object OcrProcessor {
     }
 
     // ─────────────────────────────────────────────
-    // MERGE DE BLOCOS PRÓXIMOS
+    // MERGE DE BLOCOS
     // ─────────────────────────────────────────────
 
     private fun mergeNearbyBlocks(
-        blocks: List<Pair<String, Rect?>>,
-        gapThreshold: Int
+        blocks: List<Pair<String, Rect?>>, gapThreshold: Int
     ): List<Pair<String, Rect?>> {
         if (blocks.isEmpty()) return emptyList()
-
         val sorted = blocks.sortedBy { it.second?.top ?: Int.MAX_VALUE }
         val out    = mutableListOf<Pair<String, Rect?>>()
         var text   = sorted[0].first
         var box: Rect? = sorted[0].second?.let { Rect(it) }
 
         for (i in 1 until sorted.size) {
-            val (nt: String, nb: Rect?) = sorted[i]
+            val (nt, nb) = sorted[i]
             val gap = (nb?.top ?: Int.MAX_VALUE) - (box?.bottom ?: Int.MIN_VALUE)
             if (gap <= gapThreshold) {
                 text += " $nt"
                 val cb = box
-                if (cb != null && nb != null) {
+                if (cb != null && nb != null)
                     box = Rect(minOf(cb.left, nb.left), minOf(cb.top, nb.top),
                         maxOf(cb.right, nb.right), maxOf(cb.bottom, nb.bottom))
-                }
             } else {
-                out.add(Pair(text.trim(), box))
-                text = nt; box = nb?.let { Rect(it) }
+                out.add(Pair(text.trim(), box)); text = nt; box = nb?.let { Rect(it) }
             }
         }
         out.add(Pair(text.trim(), box))
@@ -170,35 +187,33 @@ object OcrProcessor {
         val out     = arrayOfNulls<TextResult>(blocks.size)
         var pending = blocks.size
 
-        blocks.forEachIndexed { i: Int, (text: String, box: Rect?) ->
-            val isJa: Boolean = containsJapanese(text)
-            val lang: String  = if (isJa) "ja" else "en"
-            val src: String   = if (isJa) TranslateLanguage.JAPANESE else TranslateLanguage.ENGLISH
-            val tgt: String   = TranslateLanguage.PORTUGUESE
-            val key: String   = "$src->$tgt"
-            val rawText       = rawMap[text] ?: text   // texto original do OCR
-
-            Log.d(TAG, "  Bloco $i [$lang]: \"${text.take(60)}\"")
+        blocks.forEachIndexed { i, (text, box) ->
+            val isJa  = containsJapanese(text)
+            val lang  = if (isJa) "ja" else "en"
+            val src   = if (isJa) TranslateLanguage.JAPANESE else TranslateLanguage.ENGLISH
+            val tgt   = TranslateLanguage.PORTUGUESE
+            val key   = "$src->$tgt"
+            val raw   = rawMap[text] ?: text
 
             if (modelReady[key] != true) {
                 synchronized(out) {
-                    out[i] = TextResult(text, text, box, lang, rawText)
+                    out[i] = TextResult(text, text, box, lang, raw)
                     if (--pending == 0) onResult(out.filterNotNull())
                 }
                 return@forEachIndexed
             }
 
             getOrCreateTranslator(src, tgt).translate(text)
-                .addOnSuccessListener { translated: String ->
+                .addOnSuccessListener { translated ->
                     synchronized(out) {
-                        out[i] = TextResult(text, translated, box, lang, rawText)
+                        out[i] = TextResult(text, translated, box, lang, raw)
                         if (--pending == 0) onResult(out.filterNotNull())
                     }
                 }
-                .addOnFailureListener { e: Exception ->
-                    Log.e(TAG, "  Falha tradução $i: ${e.message}")
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Falha tradução $i: ${e.message}")
                     synchronized(out) {
-                        out[i] = TextResult(text, text, box, lang, rawText)
+                        out[i] = TextResult(text, text, box, lang, raw)
                         if (--pending == 0) onResult(out.filterNotNull())
                     }
                 }
