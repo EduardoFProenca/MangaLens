@@ -29,16 +29,20 @@ object GameOverlayManager {
     // ─────────────────────────────────────────────
 
     private fun isSystemZoomActive(context: Context): Boolean = try {
-        Settings.Secure.getInt(context.contentResolver,
-            "accessibility_display_magnification_enabled") == 1
+        Settings.Secure.getInt(
+            context.contentResolver,
+            "accessibility_display_magnification_enabled"
+        ) == 1
     } catch (e: Exception) { false }
 
     // ─────────────────────────────────────────────
-    // FILTRO
+    // FILTRO E ORDENAÇÃO
     // ─────────────────────────────────────────────
 
     private fun filterAndSort(
-        results: List<TextResult>, screenHeight: Int, filterSystemUi: Boolean
+        results: List<TextResult>,
+        screenHeight: Int,
+        filterSystemUi: Boolean
     ): List<TextResult> {
         val filtered = if (filterSystemUi) {
             val top = (screenHeight * 0.10f).toInt()
@@ -50,7 +54,9 @@ object GameOverlayManager {
                 val t = r.originalText.trim()
                 t.length >= 3 && !t.matches(Regex("""\d{1,2}:\d{2}.*"""))
             }
-        } else results.filter { r -> r.originalText.trim().length >= 2 }
+        } else {
+            results.filter { r -> r.originalText.trim().length >= 2 }
+        }
         return filtered.sortedBy { it.boundingBox?.top ?: Int.MAX_VALUE }
     }
 
@@ -82,48 +88,59 @@ object GameOverlayManager {
         view.findViewById<View>(R.id.clockSafeZone).visibility =
             if (showSafeZone) View.VISIBLE else View.GONE
 
+        // FLAG_NOT_TOUCH_MODAL: permite que os Chips recebam eventos de toque
+        // corretamente (FLAG_NOT_FOCUSABLE bloqueava interações internas).
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT
         ).apply { gravity = Gravity.BOTTOM }
 
         var currentIndex = 0
 
-        // renderCurrent é chamada também após edições para redesenhar
         fun renderCurrent() {
             val result  = mutable[currentIndex]
             val hasNext = currentIndex < mutable.lastIndex
 
-            if (gameModeEnabled) {
-                setupGameMode(
-                    view, result, hasNext, context, windowManager,
-                    onNext   = { currentIndex++; renderCurrent() },
-                    onEditOriginal = { newOriginal ->
-                        // Usuário corrigiu o EN → dispara nova tradução
-                        mutable[currentIndex] = mutable[currentIndex].copy(originalText = newOriginal)
-                        retranslateAndRender(context, windowManager, mutable, currentIndex) {
+            try {
+                if (gameModeEnabled) {
+                    setupGameMode(
+                        view, result, hasNext, context, windowManager,
+                        onNext         = { currentIndex++; renderCurrent() },
+                        onEditOriginal = { newOriginal ->
+                            mutable[currentIndex] =
+                                mutable[currentIndex].copy(originalText = newOriginal)
+                            retranslateAndRender(
+                                context, windowManager, mutable, currentIndex
+                            ) { renderCurrent() }
+                        }
+                    )
+                } else {
+                    setupTranslationMode(
+                        view, result, hasNext, context, windowManager,
+                        onNext            = { currentIndex++; renderCurrent() },
+                        onEditOriginal    = { newOriginal ->
+                            mutable[currentIndex] =
+                                mutable[currentIndex].copy(originalText = newOriginal)
+                            retranslateAndRender(
+                                context, windowManager, mutable, currentIndex
+                            ) { renderCurrent() }
+                        },
+                        onEditTranslation = { newPt ->
+                            mutable[currentIndex] =
+                                mutable[currentIndex].copy(translatedText = newPt)
                             renderCurrent()
                         }
-                    }
-                )
-            } else {
-                setupTranslationMode(
-                    view, result, hasNext, context, windowManager,
-                    onNext   = { currentIndex++; renderCurrent() },
-                    onEditOriginal = { newOriginal ->
-                        mutable[currentIndex] = mutable[currentIndex].copy(originalText = newOriginal)
-                        retranslateAndRender(context, windowManager, mutable, currentIndex) {
-                            renderCurrent()
-                        }
-                    },
-                    onEditTranslation = { newPt ->
-                        mutable[currentIndex] = mutable[currentIndex].copy(translatedText = newPt)
-                        renderCurrent()
-                    }
-                )
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Erro ao renderizar overlay: ${e.message}", e)
+                Toast.makeText(
+                    context, "❌ Erro no overlay: ${e.message}", Toast.LENGTH_LONG
+                ).show()
             }
 
             view.findViewById<TextView>(R.id.tvProgress).apply {
@@ -133,23 +150,28 @@ object GameOverlayManager {
         }
 
         renderCurrent()
+
         view.findViewById<TextView>(R.id.btnClose).setOnClickListener {
             OverlayEditor.dismiss(windowManager)
             removeOverlay(windowManager)
         }
 
-        windowManager.addView(view, params)
-        overlayView = view
+        try {
+            windowManager.addView(view, params)
+            overlayView = view
+            Log.d(TAG, "Overlay aberto. Modo: ${if (gameModeEnabled) "GAME" else "TRANSLATION"}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Falha ao adicionar overlay: ${e.message}", e)
+            Toast.makeText(
+                context, "❌ Falha ao abrir overlay: ${e.message}", Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     // ─────────────────────────────────────────────
     // RE-TRADUÇÃO APÓS EDIÇÃO DO ORIGINAL
     // ─────────────────────────────────────────────
 
-    /**
-     * Quando o usuário corrige o texto EN, re-executa a tradução
-     * e atualiza o item na lista mutável antes de chamar [onDone].
-     */
     private fun retranslateAndRender(
         context: Context,
         windowManager: WindowManager,
@@ -159,7 +181,6 @@ object GameOverlayManager {
     ) {
         val result = mutable[index]
         Toast.makeText(context, "🔄 Traduzindo correção...", Toast.LENGTH_SHORT).show()
-
         OcrProcessor.retranslate(result.originalText) { translated ->
             mutable[index] = result.copy(translatedText = translated)
             onDone()
@@ -167,12 +188,15 @@ object GameOverlayManager {
     }
 
     // ─────────────────────────────────────────────
-    // MODO TRADUÇÃO (painel inferior)
+    // MODO TRADUÇÃO DIRETA
     // ─────────────────────────────────────────────
 
     private fun setupTranslationMode(
-        view: View, result: TextResult, hasNext: Boolean,
-        context: Context, windowManager: WindowManager,
+        view: View,
+        result: TextResult,
+        hasNext: Boolean,
+        context: Context,
+        windowManager: WindowManager,
         onNext: () -> Unit,
         onEditOriginal: (String) -> Unit,
         onEditTranslation: (String) -> Unit
@@ -190,20 +214,24 @@ object GameOverlayManager {
         }
         tvTranslation.text = "🇧🇷 ${result.translatedText}"
 
+        // Botões de cópia sempre visíveis no modo tradução
         setupCopyButtons(view, context, result.originalText, result.translatedText)
 
-        // ── Botão ✏️ EN — corrige o original e re-traduz ──────────────────
+        // Oculta botão de frase do jogo (não se aplica neste modo)
+        view.findViewById<TextView>(R.id.btnEditGameSentence).visibility = View.GONE
+
+        // ── ✏️ EN — BUG 3 FIX: sempre VISIBLE, mesmo que seja o primeiro render ──
         view.findViewById<TextView>(R.id.btnEditOriginal).apply {
             visibility = View.VISIBLE
             setOnClickListener {
                 OverlayEditor.show(
-                    context     = context,
+                    context       = context,
                     windowManager = windowManager,
-                    title       = "✏️ Corrigir texto original (EN)",
-                    initialText = result.originalText,
-                    hint        = "Corrija o que o OCR leu errado...",
-                    gravityY    = (220 * context.resources.displayMetrics.density).toInt(),
-                    onConfirm   = { newText ->
+                    title         = "✏️ Corrigir texto original (EN)",
+                    initialText   = result.originalText,
+                    hint          = "Corrija o que o OCR leu errado...",
+                    gravityY      = (220 * context.resources.displayMetrics.density).toInt(),
+                    onConfirm     = { newText ->
                         tvOriginal.text = "🇬🇧 $newText"
                         onEditOriginal(newText)
                     }
@@ -211,17 +239,17 @@ object GameOverlayManager {
             }
         }
 
-        // ── Botão ✏️ PT — corrige a tradução diretamente ──────────────────
+        // ── ✏️ PT ──
         view.findViewById<TextView>(R.id.btnEditTranslation).apply {
             visibility = View.VISIBLE
             setOnClickListener {
                 OverlayEditor.show(
-                    context     = context,
+                    context       = context,
                     windowManager = windowManager,
-                    title       = "✏️ Corrigir tradução (PT)",
-                    initialText = result.translatedText,
-                    gravityY    = (220 * context.resources.displayMetrics.density).toInt(),
-                    onConfirm   = { newText ->
+                    title         = "✏️ Corrigir tradução (PT)",
+                    initialText   = result.translatedText,
+                    gravityY      = (220 * context.resources.displayMetrics.density).toInt(),
+                    onConfirm     = { newText ->
                         tvTranslation.text = "🇧🇷 $newText"
                         setupCopyButtons(view, context, result.originalText, newText)
                         onEditTranslation(newText)
@@ -239,17 +267,22 @@ object GameOverlayManager {
     // ─────────────────────────────────────────────
 
     private fun setupGameMode(
-        view: View, result: TextResult, hasNext: Boolean,
-        context: Context, windowManager: WindowManager,
+        view: View,
+        result: TextResult,
+        hasNext: Boolean,
+        context: Context,
+        windowManager: WindowManager,
         onNext: () -> Unit,
         onEditOriginal: (String) -> Unit
     ) {
+        // BUG 1 FIX: containerGame recebe VISIBLE *antes* de popular os chips.
+        // Se estiver GONE durante addView(), o Android não calcula as dimensões
+        // dos filhos corretamente, fazendo os chips aparecerem com tamanho zero.
         view.findViewById<LinearLayout>(R.id.containerTranslation).visibility = View.GONE
         view.findViewById<LinearLayout>(R.id.containerGame).visibility        = View.VISIBLE
-        hideCopyButtons(view)
 
-        // Oculta botões de edição de PT no modo game (não se aplica)
         view.findViewById<TextView>(R.id.btnEditTranslation).visibility = View.GONE
+        hideCopyButtons(view)
 
         val tvInstruction   = view.findViewById<TextView>(R.id.tvInstruction)
         val chipGroupAnswer = view.findViewById<ChipGroup>(R.id.chipGroupAnswer)
@@ -258,15 +291,34 @@ object GameOverlayManager {
         val btnNext         = view.findViewById<TextView>(R.id.btnNext)
         val btnSkip         = view.findViewById<TextView>(R.id.btnSkip)
 
-        chipGroupAnswer.removeAllViews(); chipGroupWords.removeAllViews()
-        tvResult.visibility = View.GONE; btnNext.visibility = View.GONE
+        chipGroupAnswer.removeAllViews()
+        chipGroupWords.removeAllViews()
+        tvResult.visibility = View.GONE
+        btnNext.visibility  = View.GONE
         btnSkip.visibility  = View.VISIBLE
 
-        val originalHint   = result.originalText
-        val sentenceToSort = result.translatedText
-        tvInstruction.text = "🇬🇧 $originalHint\n\nMonte a tradução em português:"
+        val originalHint = result.originalText
 
-        // ── Botão ✏️ EN no modo game — corrige o original e recria o jogo ─
+        // BUG 1 FIX: fallback para quando a tradução não está disponível.
+        // OcrProcessor retorna translatedText == originalText quando o modelo
+        // MLKit ainda não foi baixado. Nesse caso usamos o texto EN mesmo —
+        // o jogo ainda funciona, e avisamos o usuário via Toast.
+        val sentenceToSort = result.translatedText
+            .takeIf { it.isNotBlank() && it != originalHint }
+            ?: originalHint.also {
+                if (result.translatedText == originalHint) {
+                    Toast.makeText(
+                        context,
+                        "⚠️ Tradução indisponível — jogo em inglês (EN).",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+
+        val sentenceLang = if (sentenceToSort == originalHint) "🇬🇧" else "🇧🇷"
+        tvInstruction.text = "🇬🇧 $originalHint\n\nMonte a frase $sentenceLang:"
+
+        // ── ✏️ EN — visível em ambos os modos ──
         view.findViewById<TextView>(R.id.btnEditOriginal).apply {
             visibility = View.VISIBLE
             setOnClickListener {
@@ -278,29 +330,29 @@ object GameOverlayManager {
                     hint          = "Corrija o que o OCR leu errado...",
                     gravityY      = (220 * context.resources.displayMetrics.density).toInt(),
                     onConfirm     = { newText ->
-                        // Re-traduz e recria todo o mini-game com as novas peças
                         onEditOriginal(newText)
-                        Toast.makeText(context,
-                            "🔄 Recriando mini-game com o texto corrigido...",
-                            Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            "🔄 Recriando mini-game...",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 )
             }
         }
 
-        // ── Botão ✏️ Frase PT — edita a frase que o usuário vai montar ───
+        // ── ✏️ Frase do jogo ──
         view.findViewById<TextView>(R.id.btnEditGameSentence).apply {
             visibility = View.VISIBLE
             setOnClickListener {
                 OverlayEditor.show(
                     context       = context,
                     windowManager = windowManager,
-                    title         = "✏️ Corrigir frase do jogo (PT)",
+                    title         = "✏️ Corrigir frase do jogo",
                     initialText   = sentenceToSort,
-                    hint          = "Corrija a tradução para montar o jogo...",
+                    hint          = "Corrija a frase para montar o jogo...",
                     gravityY      = (220 * context.resources.displayMetrics.density).toInt(),
                     onConfirm     = { newPt ->
-                        // Reconstrói os chips com a frase corrigida
                         rebuildGameWithSentence(
                             view, newPt, originalHint,
                             chipGroupAnswer, chipGroupWords,
@@ -316,7 +368,7 @@ object GameOverlayManager {
         val words = sentenceToSort.split(" ").filter { it.isNotBlank() }
 
         if (words.size <= 1) {
-            tvResult.text       = "🇧🇷 $sentenceToSort"
+            tvResult.text       = "$sentenceLang $sentenceToSort"
             tvResult.setTextColor(Color.WHITE)
             tvResult.visibility = View.VISIBLE
             btnSkip.visibility  = View.GONE
@@ -344,10 +396,9 @@ object GameOverlayManager {
     }
 
     // ─────────────────────────────────────────────
-    // CONSTRUÇÃO / RECONSTRUÇÃO DOS CHIPS
+    // CONSTRUÇÃO DOS CHIPS
     // ─────────────────────────────────────────────
 
-    /** Constrói os chips para uma frase. Chamado na inicialização e após edição. */
     private fun buildGameChips(
         view: View,
         sentence: String,
@@ -367,7 +418,9 @@ object GameOverlayManager {
         tvResult.visibility = View.GONE
         btnNext.visibility  = View.GONE
         btnSkip.visibility  = View.VISIBLE
-        tvInstruction.text  = "🇬🇧 $originalHint\n\nMonte a tradução em português:"
+
+        val sentenceLang = if (sentence == originalHint) "🇬🇧" else "🇧🇷"
+        tvInstruction.text = "🇬🇧 $originalHint\n\nMonte a frase $sentenceLang:"
 
         val words     = sentence.split(" ").filter { it.isNotBlank() }
         val available = words.shuffled().toMutableList()
@@ -379,16 +432,23 @@ object GameOverlayManager {
 
         refreshW = {
             chipGroupWords.removeAllViews()
-            if (!done) available.forEach { word ->
-                chipGroupWords.addView(buildWordChip(context, word) {
-                    selected.add(word); available.remove(word)
-                    refreshW(); refreshA()
-                    checkAnswer(selected, words, tvResult, sentence,
-                        view, hasNext, context, onNext) {
-                        done = true
-                        setupCopyButtons(view, context, originalHint, sentence)
-                    }
-                })
+            if (!done) {
+                available.forEach { word ->
+                    chipGroupWords.addView(buildWordChip(context, word) {
+                        selected.add(word)
+                        available.remove(word)
+                        refreshW()
+                        refreshA()
+                        checkAnswer(
+                            selected, words, tvResult, sentence,
+                            view, hasNext, context, onNext
+                        ) {
+                            done = true
+                            // BUG 2 FIX: botões de cópia disponíveis logo após acerto
+                            setupCopyButtons(view, context, originalHint, sentence)
+                        }
+                    })
+                }
             }
         }
 
@@ -397,12 +457,14 @@ object GameOverlayManager {
             selected.toList().forEach { word ->
                 chipGroupAnswer.addView(buildAnswerChip(context, word, !done) {
                     if (!done) {
-                        selected.remove(word); available.add(word)
+                        selected.remove(word)
+                        available.add(word)
                         tvResult.visibility = View.GONE
                         btnNext.visibility  = View.GONE
                         btnSkip.visibility  = View.VISIBLE
                         hideCopyButtons(view)
-                        refreshW(); refreshA()
+                        refreshW()
+                        refreshA()
                     }
                 })
             }
@@ -410,7 +472,6 @@ object GameOverlayManager {
 
         refreshW()
 
-        // Reconfigura o botão pular com a nova frase
         view.findViewById<TextView>(R.id.btnSkip).setOnClickListener {
             done = true
             tvResult.text       = "💡 Resposta: $sentence"
@@ -423,7 +484,10 @@ object GameOverlayManager {
         }
     }
 
-    /** Reconstrói o jogo com uma frase PT editada pelo usuário. */
+    // ─────────────────────────────────────────────
+    // RECONSTRUÇÃO APÓS EDIÇÃO DA FRASE DO JOGO
+    // ─────────────────────────────────────────────
+
     private fun rebuildGameWithSentence(
         view: View,
         newSentence: String,
@@ -462,17 +526,27 @@ object GameOverlayManager {
     // BOTÕES DE CÓPIA
     // ─────────────────────────────────────────────
 
+    // BUG 2 FIX: define VISIBLE nos três elementos independentemente do estado anterior.
     private fun setupCopyButtons(
-        view: View, context: Context, original: String, translated: String
+        view: View,
+        context: Context,
+        original: String,
+        translated: String
     ) {
         view.findViewById<LinearLayout>(R.id.containerCopyButtons).visibility = View.VISIBLE
+
         view.findViewById<TextView>(R.id.btnCopyOriginal).apply {
             visibility = View.VISIBLE
-            setOnClickListener { TranslationOverlay.copyToClipboard(context, original, "Original EN") }
+            setOnClickListener {
+                TranslationOverlay.copyToClipboard(context, original, "Original EN")
+            }
         }
+
         view.findViewById<TextView>(R.id.btnCopyTranslation).apply {
             visibility = View.VISIBLE
-            setOnClickListener { TranslationOverlay.copyToClipboard(context, translated, "Tradução PT") }
+            setOnClickListener {
+                TranslationOverlay.copyToClipboard(context, translated, "Tradução PT")
+            }
         }
     }
 
@@ -484,37 +558,52 @@ object GameOverlayManager {
     // CHIPS
     // ─────────────────────────────────────────────
 
-    private fun buildAnswerChip(ctx: Context, word: String, enabled: Boolean, onClick: () -> Unit) =
-        Chip(ctx).apply {
-            text = word; isClickable = enabled
-            setChipBackgroundColorResource(android.R.color.holo_blue_light)
-            setTextColor(Color.WHITE); setOnClickListener { onClick() }
-        }
+    private fun buildAnswerChip(
+        ctx: Context, word: String, enabled: Boolean, onClick: () -> Unit
+    ) = Chip(ctx).apply {
+        text = word
+        isClickable = enabled
+        setChipBackgroundColorResource(android.R.color.holo_blue_light)
+        setTextColor(Color.WHITE)
+        setOnClickListener { onClick() }
+    }
 
-    private fun buildWordChip(ctx: Context, word: String, onClick: () -> Unit) =
-        Chip(ctx).apply { text = word; isClickable = true; setOnClickListener { onClick() } }
+    private fun buildWordChip(
+        ctx: Context, word: String, onClick: () -> Unit
+    ) = Chip(ctx).apply {
+        text = word
+        isClickable = true
+        setOnClickListener { onClick() }
+    }
 
     // ─────────────────────────────────────────────
     // VERIFICAÇÃO DE RESPOSTA
     // ─────────────────────────────────────────────
 
     private fun checkAnswer(
-        selected: List<String>, correct: List<String>,
-        tvResult: TextView, translation: String,
-        view: View, hasNext: Boolean, context: Context,
-        onNext: () -> Unit, onCorrect: () -> Unit
+        selected: List<String>,
+        correct: List<String>,
+        tvResult: TextView,
+        translation: String,
+        view: View,
+        hasNext: Boolean,
+        context: Context,
+        onNext: () -> Unit,
+        onCorrect: () -> Unit
     ) {
         when {
             selected == correct -> {
                 onCorrect()
-                tvResult.text = "✅ Correto! 🇧🇷 $translation"
-                tvResult.setTextColor(Color.GREEN); tvResult.visibility = View.VISIBLE
+                tvResult.text = "✅ Correto! $translation"
+                tvResult.setTextColor(Color.GREEN)
+                tvResult.visibility = View.VISIBLE
                 view.findViewById<TextView>(R.id.btnSkip).visibility = View.GONE
                 setupNextButton(view, hasNext, onNext)
             }
             selected.size == correct.size -> {
                 tvResult.text = "❌ Quase! Toque nas palavras para reorganizar."
-                tvResult.setTextColor(Color.RED); tvResult.visibility = View.VISIBLE
+                tvResult.setTextColor(Color.RED)
+                tvResult.visibility = View.VISIBLE
             }
             else -> tvResult.visibility = View.GONE
         }
