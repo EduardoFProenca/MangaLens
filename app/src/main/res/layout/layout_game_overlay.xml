@@ -1,22 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    CORREÇÕES APLICADAS NESTA VERSÃO:
+    CORREÇÕES DE CAUSA RAIZ NESTA VERSÃO:
 
     BUG 1 (mini-game vazio):
-      - containerGame estava sendo populado antes de ter VISIBLE no código anterior.
-        Corrigido no Kotlin (GameOverlayManager.kt).
+      Corrigido no Kotlin: filterForGameMode() não exige boundingBox != null.
+      A função anterior descartava TODOS os blocos sem coordenadas de tela,
+      que é o caso comum em captureAndProcess com isFullScreen=true.
 
     BUG 2 (botão Copiar sumiu):
-      - containerCopyButtons usava layout_width="0dp" + layout_weight="1" dentro de um
-        LinearLayout horizontal. Quando visibility vai de GONE→VISIBLE, o weight não
-        é recalculado corretamente em overlay views. Corrigido para wrap_content sem weight.
+      Corrigido no Kotlin: setupCopyButtons() é chamado no INÍCIO de setupGameMode(),
+      não apenas após acerto/pulo. Também corrigido no XML: containerCopyButtons
+      usa wrap_content sem weight, e fica numa linha isolada.
 
     BUG 3 (✏️ EN não aparece no modo tradução):
-      - btnEditOriginal estava sozinho na "Linha 2", abaixo do containerCopyButtons.
-        Em algumas versões do Android a segunda linha era suprimida antes do layout pass.
-        SOLUÇÃO: btnEditOriginal e btnEditTranslation ficam na MESMA linha horizontal,
-        lado a lado, garantindo que ambos sejam renderizados no mesmo layout pass.
-        O Kotlin controla qual é VISIBLE em cada modo.
+      CAUSA RAIZ: os botões de edição (Linha B) ficavam ABAIXO do
+      containerCopyButtons (Linha A). Quando containerCopyButtons se tornava VISIBLE
+      (com wrap_content), ele empurrava a Linha B para fora da área visível do painel.
+      SOLUÇÃO: inverter a ordem — botões de edição PRIMEIRO, cópia DEPOIS.
+      Assim, EN e PT de edição sempre têm espaço garantido no topo da barra de ações,
+      independente do estado de visibilidade dos botões de cópia.
 -->
 <ScrollView
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -115,7 +117,7 @@
                 android:lineSpacingMultiplier="1.3"
                 android:layout_marginBottom="8dp" />
 
-            <!-- Área de resposta do usuário (chips selecionados) -->
+            <!-- Área de resposta (chips selecionados pelo usuário) -->
             <HorizontalScrollView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -139,11 +141,11 @@
                 android:background="#555555"
                 android:layout_marginVertical="8dp" />
 
-            <!-- Banco de palavras disponíveis — maxHeight reduzido para caber os botões abaixo -->
+            <!-- Banco de palavras — maxHeight contido para não empurrar botões abaixo -->
             <ScrollView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:maxHeight="110dp"
+                android:maxHeight="100dp"
                 android:scrollbars="vertical"
                 android:fadeScrollbars="false"
                 android:overScrollMode="never">
@@ -166,31 +168,106 @@
 
         </LinearLayout>
 
-        <!-- ══ SEPARADOR VISUAL ANTES DA BARRA DE AÇÕES ══ -->
+        <!-- ══ SEPARADOR ══ -->
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
             android:background="#44FFFFFF"
             android:layout_marginTop="10dp"
-            android:layout_marginBottom="8dp" />
+            android:layout_marginBottom="6dp" />
 
-        <!-- ══ BARRA DE AÇÕES ══
-             ESTRUTURA REORGANIZADA (BUG 2 + BUG 3):
+        <!--
+            ══ BARRA DE AÇÕES — ORDEM CORRIGIDA (BUG 3 FIX) ══
 
-             Linha A: [📋 EN] [🌐 PT]  ← botões de cópia (wrap_content, sem weight)
-             Linha B: [✏️ EN] [✏️ PT] [✏️ Frase do jogo]  ← botões de edição, todos na mesma linha
-             Linha C: [Pular ⏭] [Próxima frase ▶]  ← rodapé
+            NOVA ORDEM (de cima para baixo):
+              1. Linha de EDIÇÃO  → ✏️ EN  |  ✏️ PT  |  ✏️ Frase do jogo
+              2. Linha de CÓPIA   → 📋 EN  |  🌐 PT
+              3. Rodapé           → Pular ⏭  |  Próxima frase ▶
 
-             Todos os botões têm minWidth/minHeight para garantir área de toque.
-             Visibilidade 100% controlada pelo Kotlin — todos começam como "gone".
+            JUSTIFICATIVA:
+            Os botões de edição ficam no TOPO da barra de ações, então
+            nunca são empurrados para fora da tela pelo containerCopyButtons.
+            O Kotlin controla qual botão é VISIBLE em cada modo — o layout
+            apenas garante que todos estejam sempre no fluxo do documento.
         -->
 
-        <!-- Linha A: Botões de cópia -->
+        <!-- ── Linha 1: BOTÕES DE EDIÇÃO (sempre no topo) ── -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="start|center_vertical"
+            android:layout_marginBottom="6dp">
+
+            <!--
+                btnEditOriginal (✏️ EN):
+                Visível em AMBOS os modos (game e tradução).
+                O Kotlin seta VISIBLE em setupGameMode e setupTranslationMode.
+            -->
+            <TextView
+                android:id="@+id/btnEditOriginal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="64dp"
+                android:minHeight="40dp"
+                android:text="✏️ EN"
+                android:textColor="#88CCFF"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="8dp"
+                android:background="#33FFFFFF"
+                android:layout_marginEnd="6dp"
+                android:visibility="gone" />
+
+            <!--
+                btnEditTranslation (✏️ PT):
+                Visível apenas no modo tradução direta.
+                O Kotlin seta GONE em setupGameMode e VISIBLE em setupTranslationMode.
+            -->
+            <TextView
+                android:id="@+id/btnEditTranslation"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="64dp"
+                android:minHeight="40dp"
+                android:text="✏️ PT"
+                android:textColor="#FFDD88"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="8dp"
+                android:background="#33FFFFFF"
+                android:layout_marginEnd="6dp"
+                android:visibility="gone" />
+
+            <!--
+                btnEditGameSentence (✏️ Frase do jogo):
+                Visível apenas no modo game.
+                O Kotlin seta VISIBLE em setupGameMode e GONE em setupTranslationMode.
+            -->
+            <TextView
+                android:id="@+id/btnEditGameSentence"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="96dp"
+                android:minHeight="40dp"
+                android:text="✏️ Frase do jogo"
+                android:textColor="#FFAA66"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="8dp"
+                android:background="#33FFFFFF"
+                android:visibility="gone" />
+
+        </LinearLayout>
+
+        <!-- ── Linha 2: BOTÕES DE CÓPIA ── -->
         <!--
-            BUG 2 FIX: layout_width="wrap_content" (era "0dp" com weight="1").
-            O weight causava colapso em GONE→VISIBLE dentro de overlay views
-            porque o LinearLayout pai não reprocessava o weight corretamente.
-  g      -->
+            containerCopyButtons: wrap_content sem weight.
+            Fica ABAIXO dos botões de edição, então nunca interfere na visibilidade deles.
+        -->
         <LinearLayout
             android:id="@+id/containerCopyButtons"
             android:layout_width="wrap_content"
@@ -208,6 +285,7 @@
                 android:text="📋 EN"
                 android:textColor="#AAAAFF"
                 android:textSize="12sp"
+                android:gravity="center"
                 android:paddingHorizontal="10dp"
                 android:paddingVertical="6dp"
                 android:background="#33FFFFFF"
@@ -223,6 +301,7 @@
                 android:text="🌐 PT"
                 android:textColor="#AAFFAA"
                 android:textSize="12sp"
+                android:gravity="center"
                 android:paddingHorizontal="10dp"
                 android:paddingVertical="6dp"
                 android:background="#33FFFFFF"
@@ -230,75 +309,13 @@
 
         </LinearLayout>
 
-        <!-- Linha B: Botões de edição (todos na mesma linha)
-             BUG 3 FIX: btnEditOriginal (✏️ EN) e btnEditTranslation (✏️ PT)
-             estão agora na MESMA linha horizontal.
-             Antes, o EN estava em uma linha separada abaixo, que em alguns casos
-             era suprimida pelo sistema antes do layout pass completar.
-        -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="start|center_vertical"
-            android:layout_marginBottom="4dp">
-
-            <!-- ✏️ EN: corrigir texto original (ambos os modos) -->
-            <TextView
-                android:id="@+id/btnEditOriginal"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minWidth="64dp"
-                android:minHeight="36dp"
-                android:text="✏️ EN"
-                android:textColor="#88CCFF"
-                android:textSize="12sp"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="6dp"
-                android:background="#33FFFFFF"
-                android:layout_marginEnd="6dp"
-                android:visibility="gone" />
-
-            <!-- ✏️ PT: corrigir tradução (modo tradução direta) -->
-            <TextView
-                android:id="@+id/btnEditTranslation"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minWidth="64dp"
-                android:minHeight="36dp"
-                android:text="✏️ PT"
-                android:textColor="#FFDD88"
-                android:textSize="12sp"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="6dp"
-                android:background="#33FFFFFF"
-                android:layout_marginEnd="6dp"
-                android:visibility="gone" />
-
-            <!-- ✏️ Frase do jogo: corrigir PT para o mini-game -->
-            <TextView
-                android:id="@+id/btnEditGameSentence"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minWidth="96dp"
-                android:minHeight="36dp"
-                android:text="✏️ Frase do jogo"
-                android:textColor="#FFAA66"
-                android:textSize="12sp"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="6dp"
-                android:background="#33FFFFFF"
-                android:visibility="gone" />
-
-        </LinearLayout>
-
-        <!-- Linha C: Rodapé de navegação -->
+        <!-- ── Linha 3: RODAPÉ DE NAVEGAÇÃO ── -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="end"
-            android:layout_marginTop="6dp">
+            android:layout_marginTop="4dp">
 
             <TextView
                 android:id="@+id/btnSkip"
