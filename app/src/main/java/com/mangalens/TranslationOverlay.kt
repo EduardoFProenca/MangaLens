@@ -18,26 +18,12 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 
-/**
- * Overlay de tradução direta (modo 📖).
- *
- * Interação:
- *  • Toque curto  → menu: Copiar EN | Copiar PT | ✏️ Editar
- *  • Toque longo  → copia o original imediatamente
- *  • Toque fora   → fecha o overlay
- *
- * Edição:
- *  • Abre um EditText focável centralizado na tela
- *  • O overlay principal troca de FLAG_NOT_FOCUSABLE para focável
- *    enquanto o teclado está aberto
- *  • Ao confirmar, substitui o texto traduzido no lugar original
- *  • "Copiar PT" depois copia a versão editada
- */
 object TranslationOverlay {
 
     private var overlayView: View? = null
     private var windowManagerRef: WindowManager? = null
     private var editDialogView: View? = null
+    private var copyMenuView: View? = null
 
     fun show(
         context: Context,
@@ -45,14 +31,16 @@ object TranslationOverlay {
         results: List<TextResult>,
         screenWidth: Int  = context.resources.displayMetrics.widthPixels,
         screenHeight: Int = context.resources.displayMetrics.heightPixels,
-        cropRect: Rect?   = null
+        cropRect: Rect?   = null,
+        // Dimensões reais do bitmap que o OCR processou.
+        // Necessário para converter coordenadas do OCR → coordenadas de tela.
+        bitmapWidth: Int  = screenWidth,
+        bitmapHeight: Int = screenHeight
     ) {
         dismiss(windowManager)
         if (results.isEmpty()) return
 
         windowManagerRef = windowManager
-
-        // Cópia mutável para permitir edição sem afetar a lista original
         val mutableResults = results.map { it.copy() }.toMutableList()
 
         val drawView = TranslationDrawView(
@@ -61,9 +49,11 @@ object TranslationOverlay {
             screenWidth   = screenWidth,
             screenHeight  = screenHeight,
             cropRect      = cropRect,
+            bitmapWidth   = bitmapWidth,
+            bitmapHeight  = bitmapHeight,
             onDismiss     = { dismiss(windowManager) },
             onCopyMenu    = { idx, original, translated ->
-                showCopyMenu(context, windowManager, idx, original, translated, mutableResults, screenWidth, screenHeight, cropRect)
+                showCopyMenu(context, windowManager, idx, original, translated, mutableResults)
             }
         )
 
@@ -84,18 +74,13 @@ object TranslationOverlay {
     // MENU DE CÓPIA + EDIÇÃO
     // ─────────────────────────────────────────────
 
-    private var copyMenuView: View? = null
-
     private fun showCopyMenu(
         context: Context,
         windowManager: WindowManager,
         resultIndex: Int,
         original: String,
         translated: String,
-        mutableResults: MutableList<TextResult>,
-        screenWidth: Int,
-        screenHeight: Int,
-        cropRect: Rect?
+        mutableResults: MutableList<TextResult>
     ) {
         dismissCopyMenu(windowManager)
 
@@ -114,12 +99,12 @@ object TranslationOverlay {
                     windowManager = windowManager,
                     currentText   = translated,
                     onConfirm     = { newText ->
-                        // Atualiza o resultado na lista mutável
-                        mutableResults[resultIndex] = mutableResults[resultIndex].copy(
-                            translatedText = newText
-                        )
-                        // Redesenha o overlay com o texto corrigido
-                        (overlayView as? TranslationDrawView)?.invalidate()
+                        mutableResults[resultIndex] = mutableResults[resultIndex]
+                            .copy(translatedText = newText)
+                        (overlayView as? TranslationDrawView)?.apply {
+                            markEdited(resultIndex)
+                            invalidate()
+                        }
                     }
                 )
             },
@@ -145,7 +130,7 @@ object TranslationOverlay {
     }
 
     // ─────────────────────────────────────────────
-    // DIALOG DE EDIÇÃO
+    // DIALOG DE EDIÇÃO (focável para teclado)
     // ─────────────────────────────────────────────
 
     private fun showEditDialog(
@@ -155,101 +140,79 @@ object TranslationOverlay {
         onConfirm: (String) -> Unit
     ) {
         dismissEditDialog(windowManager)
-
         val density = context.resources.displayMetrics.density
 
-        // Container principal
         val container = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(
-                (16 * density).toInt(), (16 * density).toInt(),
-                (16 * density).toInt(), (16 * density).toInt()
+                (16*density).toInt(), (16*density).toInt(),
+                (16*density).toInt(), (16*density).toInt()
             )
-            setBackgroundColor(Color.argb(245, 25, 25, 45))
-        }
-
-        // Título
-        val title = TextView(context).apply {
-            text      = "✏️  Corrigir tradução"
-            textSize  = 14f
-            setTextColor(Color.argb(200, 180, 180, 255))
-            setPadding(0, 0, 0, (10 * density).toInt())
-        }
-
-        // Campo de edição
-        val editText = EditText(context).apply {
-            setText(currentText)
-            textSize  = 15f
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.GRAY)
-            hint      = "Digite a tradução corrigida..."
-            background = null
-            setBackgroundColor(Color.argb(80, 100, 100, 180))
-            setPadding(
-                (12 * density).toInt(), (10 * density).toInt(),
-                (12 * density).toInt(), (10 * density).toInt()
-            )
-            maxLines  = 5
-            isSingleLine = false
-            // Posiciona o cursor no final
-            setSelection(currentText.length)
-        }
-
-        // Botões
-        val btnRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity     = Gravity.END
-            setPadding(0, (12 * density).toInt(), 0, 0)
-        }
-
-        val btnCancel = TextView(context).apply {
-            text     = "Cancelar"
-            textSize = 13f
-            setTextColor(Color.argb(180, 180, 180, 180))
-            setPadding((16 * density).toInt(), (10 * density).toInt(),
-                (16 * density).toInt(), (10 * density).toInt())
-            setOnClickListener { dismissEditDialog(windowManager) }
-        }
-
-        val btnConfirm = TextView(context).apply {
-            text     = "✓  Confirmar"
-            textSize = 13f
-            setTextColor(Color.argb(255, 130, 200, 130))
-            setPadding((16 * density).toInt(), (10 * density).toInt(),
-                (16 * density).toInt(), (10 * density).toInt())
-            setOnClickListener {
-                val newText = editText.text.toString().trim()
-                if (newText.isNotEmpty()) {
-                    dismissEditDialog(windowManager)
-                    onConfirm(newText)
-                    Toast.makeText(context, "✅ Texto corrigido", Toast.LENGTH_SHORT).show()
-                }
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.argb(245, 25, 25, 45))
+                cornerRadius = 16f * density
             }
         }
 
-        btnRow.addView(btnCancel)
-        btnRow.addView(btnConfirm)
+        container.addView(TextView(context).apply {
+            text     = "✏️  Corrigir tradução"
+            textSize = 14f
+            setTextColor(Color.argb(200, 180, 180, 255))
+            setPadding(0, 0, 0, (10*density).toInt())
+        })
 
-        container.addView(title)
+        val editText = EditText(context).apply {
+            setText(currentText)
+            textSize     = 15f
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+            hint         = "Digite a tradução corrigida..."
+            background   = null
+            setBackgroundColor(Color.argb(80, 100, 100, 180))
+            setPadding((12*density).toInt(), (10*density).toInt(),
+                (12*density).toInt(), (10*density).toInt())
+            maxLines     = 5
+            isSingleLine = false
+            setSelection(currentText.length)
+        }
         container.addView(editText)
+
+        val btnRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity     = Gravity.END
+            setPadding(0, (12*density).toInt(), 0, 0)
+        }
+        btnRow.addView(TextView(context).apply {
+            text = "Cancelar"; textSize = 13f
+            setTextColor(Color.argb(180, 180, 180, 180))
+            setPadding((16*density).toInt(), (10*density).toInt(),
+                (16*density).toInt(), (10*density).toInt())
+            setOnClickListener { dismissEditDialog(windowManager) }
+        })
+        btnRow.addView(TextView(context).apply {
+            text = "✓  Confirmar"; textSize = 13f
+            setTextColor(Color.argb(255, 130, 200, 130))
+            setPadding((16*density).toInt(), (10*density).toInt(),
+                (16*density).toInt(), (10*density).toInt())
+            setOnClickListener {
+                val t = editText.text.toString().trim()
+                if (t.isNotEmpty()) {
+                    dismissEditDialog(windowManager)
+                    onConfirm(t)
+                    Toast.makeText(context, "✅ Texto corrigido", Toast.LENGTH_SHORT).show()
+                }
+            }
+        })
         container.addView(btnRow)
 
-        // Arredonda o container
-        container.background = android.graphics.drawable.GradientDrawable().apply {
-            setColor(Color.argb(245, 25, 25, 45))
-            cornerRadius = 16f * density
-        }
-
-        // ── Parâmetros: FOCUSÁVEL para aceitar teclado ────────────────────
-        // Diferença chave: sem FLAG_NOT_FOCUSABLE e com FLAG_WATCH_OUTSIDE_TOUCH
         val params = WindowManager.LayoutParams(
-            (300 * density).toInt(),
+            (300*density).toInt(),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,  // fecha ao tocar fora
+            WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity    = Gravity.CENTER
+            gravity       = Gravity.CENTER
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE or
                     WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
         }
@@ -257,7 +220,6 @@ object TranslationOverlay {
         windowManager.addView(container, params)
         editDialogView = container
 
-        // Abre o teclado automaticamente após um frame
         Handler(Looper.getMainLooper()).postDelayed({
             editText.requestFocus()
             val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
@@ -266,30 +228,29 @@ object TranslationOverlay {
     }
 
     private fun dismissEditDialog(windowManager: WindowManager) {
-        editDialogView?.let { view ->
-            // Fecha o teclado antes de remover a view
+        editDialogView?.let { v ->
             runCatching {
-                val imm = view.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                imm.hideSoftInputFromWindow(view.windowToken, 0)
+                val imm = v.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.hideSoftInputFromWindow(v.windowToken, 0)
             }
-            runCatching { windowManager.removeView(view) }
+            runCatching { windowManager.removeView(v) }
         }
         editDialogView = null
     }
 
     // ─────────────────────────────────────────────
-    // HIDE / RESTORE (captura contínua)
+    // HIDE / RESTORE / DISMISS
     // ─────────────────────────────────────────────
 
     fun hide() {
-        overlayView?.visibility  = View.INVISIBLE
-        copyMenuView?.visibility = View.INVISIBLE
+        overlayView?.visibility    = View.INVISIBLE
+        copyMenuView?.visibility   = View.INVISIBLE
         editDialogView?.visibility = View.INVISIBLE
     }
 
     fun restore() {
-        overlayView?.visibility  = View.VISIBLE
-        copyMenuView?.visibility = View.VISIBLE
+        overlayView?.visibility    = View.VISIBLE
+        copyMenuView?.visibility   = View.VISIBLE
         editDialogView?.visibility = View.VISIBLE
     }
 
@@ -303,10 +264,6 @@ object TranslationOverlay {
 
     fun isVisible(): Boolean = overlayView?.visibility == View.VISIBLE
 
-    // ─────────────────────────────────────────────
-    // CLIPBOARD
-    // ─────────────────────────────────────────────
-
     fun copyToClipboard(context: Context, text: String, label: String = "MangaLens") {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText(label, text))
@@ -315,7 +272,7 @@ object TranslationOverlay {
 }
 
 // ─────────────────────────────────────────────────────
-// VIEW DE DESENHO DAS CAIXAS DE TRADUÇÃO
+// VIEW DE DESENHO — ANCORAGEM PRECISA AO TEXTO ORIGINAL
 // ─────────────────────────────────────────────────────
 
 @SuppressLint("ClickableViewAccessibility")
@@ -325,62 +282,73 @@ class TranslationDrawView(
     private val screenWidth: Int,
     private val screenHeight: Int,
     private val cropRect: Rect?,
+    // Dimensões do bitmap processado pelo OCR.
+    // Podem diferir das dimensões da tela quando há escalonamento.
+    private val bitmapWidth: Int,
+    private val bitmapHeight: Int,
     private val onDismiss: () -> Unit,
-    // Callback passa o índice do resultado para que a edição saiba qual atualizar
     private val onCopyMenu: (index: Int, original: String, translated: String) -> Unit
 ) : View(context) {
 
     private val density = context.resources.displayMetrics.density
 
+    // Fatores de escala: converte coordenadas do bitmap → coordenadas da tela
+    // Quando cropRect≠null, o bitmap é o recorte; as coordenadas são relativas a ele.
+    // O offsetX/Y adiciona a posição do recorte na tela.
+    private val scaleX: Float get() {
+        val bmpW = if (bitmapWidth > 0) bitmapWidth else screenWidth
+        val displayW = cropRect?.width() ?: screenWidth
+        return displayW.toFloat() / bmpW.toFloat()
+    }
+    private val scaleY: Float get() {
+        val bmpH = if (bitmapHeight > 0) bitmapHeight else screenHeight
+        val displayH = cropRect?.height() ?: screenHeight
+        return displayH.toFloat() / bmpH.toFloat()
+    }
+
     private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(235, 255, 255, 245); style = Paint.Style.FILL
+        color = Color.argb(230, 255, 255, 248); style = Paint.Style.FILL
     }
     private val bubbleStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(190, 80, 80, 200); style = Paint.Style.STROKE; strokeWidth = 2f
+        color = Color.argb(200, 80, 80, 200); style = Paint.Style.STROKE; strokeWidth = 2f
+    }
+    private val editedStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(220, 50, 180, 80); style = Paint.Style.STROKE; strokeWidth = 2.5f
     }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color    = Color.argb(255, 15, 15, 70)
-        textSize = 14f * density
+        textSize = 13f * density
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     }
     private val editedTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        // Texto editado aparece em verde escuro para indicar correção manual
         color    = Color.argb(255, 10, 80, 20)
-        textSize = 14f * density
+        textSize = 13f * density
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     }
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color    = Color.argb(140, 255, 255, 255)
-        textSize = 11f * density
+        color    = Color.argb(130, 255, 255, 255)
+        textSize = 10f * density
         setShadowLayer(4f, 0f, 2f, Color.BLACK)
     }
-    private val scenePaint = Paint().apply {
-        color = Color.argb(25, 0, 0, 0); style = Paint.Style.FILL
+    // Sombra sutil atrás do texto original para indicar que está coberto
+    private val coverPaint = Paint().apply {
+        color = Color.argb(12, 0, 0, 0); style = Paint.Style.FILL
     }
     private val highlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(60, 80, 80, 220); style = Paint.Style.FILL
-    }
-    // Borda especial para itens editados
-    private val editedStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(200, 50, 180, 80); style = Paint.Style.STROKE; strokeWidth = 2.5f
+        color = Color.argb(50, 80, 80, 220); style = Paint.Style.FILL
     }
 
-    private val padH    = 10f * density
-    private val padV    = 6f  * density
-    private val cornerR = 8f  * density
+    private val padH    = 8f  * density
+    private val padV    = 5f  * density
+    private val cornerR = 7f  * density
 
     private data class BubbleHitBox(val rect: RectF, val index: Int)
     private val hitBoxes = mutableListOf<BubbleHitBox>()
     private var highlightedIndex = -1
     private var longPressRunnable: Runnable? = null
-
-    // Rastreia quais índices foram editados manualmente
     private val editedIndices = mutableSetOf<Int>()
 
-    fun markEdited(index: Int) {
-        editedIndices.add(index)
-        invalidate()
-    }
+    fun markEdited(index: Int) { editedIndices.add(index) }
 
     init {
         setOnTouchListener { _, event ->
@@ -391,7 +359,6 @@ class TranslationDrawView(
                         highlightedIndex = hitBoxes[idx].index
                         invalidate()
                         longPressRunnable = Runnable {
-                            // Toque longo: copia o original diretamente
                             TranslationOverlay.copyToClipboard(
                                 context, results[hitBoxes[idx].index].originalText, "Original EN"
                             )
@@ -422,80 +389,94 @@ class TranslationDrawView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), scenePaint)
         hitBoxes.clear()
 
         val offsetX = cropRect?.left?.toFloat() ?: 0f
         val offsetY = cropRect?.top?.toFloat()  ?: 0f
 
-        // Bug fix: Rastrear último drawTop para evitar sobreposição de traduções
-        val usedRegions = mutableListOf<Pair<Float, Float>>() // (top, bottom) de cada tradução
-
         results.forEachIndexed { idx, result ->
-            val box         = result.boundingBox ?: return@forEachIndexed
+            val box = result.boundingBox ?: return@forEachIndexed
             val translation = result.translatedText.ifBlank { result.originalText }
             val isEdited    = idx in editedIndices
 
-            val absLeft   = box.left.toFloat()   + offsetX
-            val absTop    = box.top.toFloat()     + offsetY
-            val absRight  = box.right.toFloat()   + offsetX
-            val absBottom = box.bottom.toFloat()  + offsetY
+            // ── Converte coordenadas do OCR → coordenadas da tela ─────────
+            // As boundingBoxes são em coordenadas do bitmap (possivelmente cropado).
+            // scaleX/scaleY ajustam caso o bitmap tenha tamanho diferente da tela.
+            // offsetX/Y reposiciona o recorte na tela.
+            val screenLeft   = box.left   * scaleX + offsetX
+            val screenTop    = box.top    * scaleY + offsetY
+            val screenRight  = box.right  * scaleX + offsetX
+            val screenBottom = box.bottom * scaleY + offsetY
 
+            // ── Calcula tamanho da caixa de tradução ──────────────────────
             val paint      = if (isEdited) editedTextPaint else textPaint
-            val maxWidth   = (absRight - absLeft).coerceAtLeast(80f * density)
-            val lines      = wrapText(translation, paint, maxWidth - padH * 2)
+            // Largura da caixa = largura do boundingBox original (mantém âncora)
+            val boxWidth   = (screenRight - screenLeft).coerceAtLeast(60f * density)
+            val lines      = wrapText(translation, paint, boxWidth - padH * 2)
             val lineHeight = paint.fontSpacing
-            val boxW       = maxWidth
             val boxH       = lines.size * lineHeight + padV * 2
 
-            var drawLeft = absLeft.coerceAtMost(screenWidth - boxW)
-            var drawTop  = absTop - boxH - 4f * density
-            if (drawTop < 0f) drawTop = absBottom + 4f * density
-
-            // Bug fix: Verificar sobreposição com traduções anteriores
-            val minGap = 6f * density  // Espaço mínimo entre traduções
-            for ((prevTop, prevBottom) in usedRegions) {
-                if (drawTop < prevBottom + minGap && drawTop + boxH > prevTop - minGap) {
-                    // Há sobreposição: mover para baixo da região anterior
-                    drawTop = prevBottom + minGap
-                }
+            // ── Posicionamento: SEMPRE colado ao texto original ───────────
+            // Estratégia: tenta colocar ACIMA do texto (mais natural para mangá).
+            // Se não couber acima, coloca ABAIXO.
+            // NÃO empurra para outros lugares — fica ancorado ao boundingBox.
+            var bubbleTop = screenTop - boxH - 2f * density
+            if (bubbleTop < 0f) {
+                // Não cabe acima → tenta abaixo
+                bubbleTop = screenBottom + 2f * density
+            }
+            // Garante que não ultrapasse a borda inferior da tela
+            if (bubbleTop + boxH > screenHeight) {
+                // Último recurso: sobrepõe o texto (dentro do próprio boundingBox)
+                bubbleTop = screenTop
             }
 
-            // Verificar se não saiu da tela
-            if (drawTop + boxH > screenHeight - 50f * density) {
-                drawTop = screenHeight - boxH - 50f * density
-            }
+            // Alinha horizontalmente com o texto — clamped para não sair da tela
+            val bubbleLeft = screenLeft.coerceIn(0f, (screenWidth - boxWidth).coerceAtLeast(0f))
 
-            usedRegions.add(Pair(drawTop, drawTop + boxH))
-
-            val boxRect = RectF(drawLeft, drawTop, drawLeft + boxW, drawTop + boxH)
+            val boxRect = RectF(bubbleLeft, bubbleTop, bubbleLeft + boxWidth, bubbleTop + boxH)
             hitBoxes.add(BubbleHitBox(boxRect, idx))
+
+            // Sombra muito leve sobre a área do texto original
+            canvas.drawRect(screenLeft, screenTop, screenRight, screenBottom, coverPaint)
 
             if (idx == highlightedIndex) canvas.drawRoundRect(boxRect, cornerR, cornerR, highlightPaint)
 
             canvas.drawRoundRect(boxRect, cornerR, cornerR, bubblePaint)
-            // Borda verde para itens editados, azul para os originais
             canvas.drawRoundRect(boxRect, cornerR, cornerR,
                 if (isEdited) editedStrokePaint else bubbleStrokePaint)
 
             lines.forEachIndexed { i, line ->
-                canvas.drawText(line, drawLeft + padH,
-                    drawTop + padV + lineHeight * i + paint.textSize, paint)
+                canvas.drawText(
+                    line,
+                    bubbleLeft + padH,
+                    bubbleTop + padV + lineHeight * i + paint.textSize,
+                    paint
+                )
             }
 
-            // Ícone: lápis se editado, clipboard se não
-            val icon = if (isEdited) "✏️" else "📋"
-            canvas.drawText(icon, drawLeft + boxW - padH * 2.5f,
-                drawTop + padV + paint.textSize, hintPaint)
+            // Ícone de ação no canto
+            canvas.drawText(
+                if (isEdited) "✏️" else "📋",
+                bubbleLeft + boxWidth - padH * 2.5f,
+                bubbleTop + padV + paint.textSize,
+                hintPaint
+            )
         }
 
-        val hint = "Toque para editar/copiar • Fora para fechar"
-        canvas.drawText(hint, (width - hintPaint.measureText(hint)) / 2f,
-            height - 24f * density, hintPaint)
+        // Dica rodapé
+        val hint = "Toque para copiar/editar • Fora para fechar"
+        canvas.drawText(
+            hint,
+            (width - hintPaint.measureText(hint)) / 2f,
+            height - 20f * density,
+            hintPaint
+        )
     }
 
     private fun wrapText(text: String, paint: Paint, maxWidth: Float): List<String> {
-        val lines = mutableListOf<String>(); var current = ""
+        val lines   = mutableListOf<String>()
+        var current = ""
         text.split(" ").forEach { word ->
             val candidate = if (current.isEmpty()) word else "$current $word"
             if (paint.measureText(candidate) <= maxWidth) current = candidate
@@ -527,113 +508,66 @@ class CopyMenuView(
     private val cornerR    = 12f * density
     private val btnCornerR = 8f  * density
 
-    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(248, 25, 25, 48); style = Paint.Style.FILL
-    }
-    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(160, 120, 120, 220); style = Paint.Style.STROKE; strokeWidth = 1.5f
-    }
-    private val btnBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(80, 100, 100, 200); style = Paint.Style.FILL
-    }
-    private val btnHoverPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(160, 120, 120, 255); style = Paint.Style.FILL
-    }
-    private val editBtnBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(80, 50, 140, 80); style = Paint.Style.FILL
-    }
-    private val editBtnHoverPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(160, 60, 180, 90); style = Paint.Style.FILL
-    }
-    private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; textSize = 13f * density
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-    }
-    private val previewPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(160, 200, 220, 255); textSize = 11f * density
-    }
-    private val dividerPaint = Paint().apply {
-        color = Color.argb(55, 200, 200, 255); strokeWidth = 1f
-    }
+    private val bgPaint         = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(248, 25, 25, 48); style = Paint.Style.FILL }
+    private val strokePaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 120, 120, 220); style = Paint.Style.STROKE; strokeWidth = 1.5f }
+    private val btnBgPaint      = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(80, 100, 100, 200); style = Paint.Style.FILL }
+    private val btnHoverPaint   = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 120, 120, 255); style = Paint.Style.FILL }
+    private val editBgPaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(80, 50, 140, 80); style = Paint.Style.FILL }
+    private val editHoverPaint  = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 60, 180, 90); style = Paint.Style.FILL }
+    private val labelPaint      = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 13f * density; typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD) }
+    private val previewPaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 200, 220, 255); textSize = 11f * density }
+    private val dividerPaint    = Paint().apply { color = Color.argb(55, 200, 200, 255); strokeWidth = 1f }
 
-    // Hit rects
-    private var rectCopyEN  = RectF()
-    private var rectCopyPT  = RectF()
-    private var rectEdit    = RectF()
-    private var hovered     = -1   // 0=EN, 1=PT, 2=edit
+    private var rectEN   = RectF(); private var rectPT   = RectF(); private var rectEdit = RectF()
+    private var hovered  = -1
 
     init {
         setOnTouchListener { _, event ->
             val x = event.x; val y = event.y
-            val inEN   = rectCopyEN.contains(x, y)
-            val inPT   = rectCopyPT.contains(x, y)
+            val inEN = rectEN.contains(x, y); val inPT = rectPT.contains(x, y)
             val inEdit = rectEdit.contains(x, y)
-
             when (event.action) {
-                android.view.MotionEvent.ACTION_DOWN,
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    hovered = when { inEN -> 0; inPT -> 1; inEdit -> 2; else -> -1 }
-                    invalidate(); true
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    hovered = when { inEN -> 0; inPT -> 1; inEdit -> 2; else -> -1 }; invalidate(); true
                 }
-                android.view.MotionEvent.ACTION_UP -> {
+                MotionEvent.ACTION_UP -> {
                     hovered = -1; invalidate()
-                    when { inEN -> onCopy(original, "Original EN")
-                        inPT -> onCopy(translated, "Tradução PT")
-                        inEdit -> onEdit()
-                        else -> onDismiss() }
+                    when { inEN -> onCopy(original, "Original EN"); inPT -> onCopy(translated, "Tradução PT"); inEdit -> onEdit(); else -> onDismiss() }
                     true
                 }
-                android.view.MotionEvent.ACTION_CANCEL -> { hovered = -1; invalidate(); true }
+                MotionEvent.ACTION_CANCEL -> { hovered = -1; invalidate(); true }
                 else -> false
             }
         }
     }
 
     override fun onMeasure(w: Int, h: Int) {
-        // 3 botões + 2 divisórias
-        val totalH = pad / 2 + btnH + pad / 4 + btnH + pad / 4 + btnH + pad / 2
-        setMeasuredDimension(menuW.toInt(), totalH.toInt())
+        setMeasuredDimension(menuW.toInt(), (pad/2 + btnH + pad/4 + btnH + pad/4 + btnH + pad/2).toInt())
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val w = width.toFloat()
-
         canvas.drawRoundRect(RectF(0f, 0f, w, height.toFloat()), cornerR, cornerR, bgPaint)
         canvas.drawRoundRect(RectF(0f, 0f, w, height.toFloat()), cornerR, cornerR, strokePaint)
+        val half = pad / 2; var top = half
 
-        val half = pad / 2
-        var top  = half
+        rectEN = RectF(half, top, w - half, top + btnH)
+        canvas.drawRoundRect(rectEN, btnCornerR, btnCornerR, if (hovered == 0) btnHoverPaint else btnBgPaint)
+        canvas.drawText("📋  Copiar Original (EN)", rectEN.left + half, rectEN.top + btnH * 0.42f, labelPaint)
+        canvas.drawText(original.take(34) + if (original.length > 34) "…" else "", rectEN.left + half, rectEN.top + btnH * 0.78f, previewPaint)
 
-        // ── Botão Copiar EN ──
-        rectCopyEN = RectF(half, top, w - half, top + btnH)
-        canvas.drawRoundRect(rectCopyEN, btnCornerR, btnCornerR,
-            if (hovered == 0) btnHoverPaint else btnBgPaint)
-        canvas.drawText("📋  Copiar Original (EN)", rectCopyEN.left + pad / 2,
-            rectCopyEN.top + btnH * 0.42f, labelPaint)
-        canvas.drawText(original.take(34) + if (original.length > 34) "…" else "",
-            rectCopyEN.left + pad / 2, rectCopyEN.top + btnH * 0.78f, previewPaint)
+        top += btnH + pad/4; canvas.drawLine(pad, top, w - pad, top, dividerPaint)
 
-        top += btnH + pad / 4
-        canvas.drawLine(pad, top, w - pad, top, dividerPaint)
+        rectPT = RectF(half, top + pad/4, w - half, top + pad/4 + btnH)
+        canvas.drawRoundRect(rectPT, btnCornerR, btnCornerR, if (hovered == 1) btnHoverPaint else btnBgPaint)
+        canvas.drawText("🌐  Copiar Tradução (PT)", rectPT.left + half, rectPT.top + btnH * 0.42f, labelPaint)
+        canvas.drawText(translated.take(34) + if (translated.length > 34) "…" else "", rectPT.left + half, rectPT.top + btnH * 0.78f, previewPaint)
 
-        // ── Botão Copiar PT ──
-        rectCopyPT = RectF(half, top + pad / 4, w - half, top + pad / 4 + btnH)
-        canvas.drawRoundRect(rectCopyPT, btnCornerR, btnCornerR,
-            if (hovered == 1) btnHoverPaint else btnBgPaint)
-        canvas.drawText("🌐  Copiar Tradução (PT)", rectCopyPT.left + pad / 2,
-            rectCopyPT.top + btnH * 0.42f, labelPaint)
-        canvas.drawText(translated.take(34) + if (translated.length > 34) "…" else "",
-            rectCopyPT.left + pad / 2, rectCopyPT.top + btnH * 0.78f, previewPaint)
+        top = rectPT.bottom + pad/4; canvas.drawLine(pad, top, w - pad, top, dividerPaint)
 
-        top = rectCopyPT.bottom + pad / 4
-        canvas.drawLine(pad, top, w - pad, top, dividerPaint)
-
-        // ── Botão Editar (verde) ──
-        rectEdit = RectF(half, top + pad / 4, w - half, top + pad / 4 + btnH)
-        canvas.drawRoundRect(rectEdit, btnCornerR, btnCornerR,
-            if (hovered == 2) editBtnHoverPaint else editBtnBgPaint)
-        canvas.drawText("✏️  Editar tradução", rectEdit.left + pad / 2,
-            rectEdit.centerY() + labelPaint.textSize / 3, labelPaint)
+        rectEdit = RectF(half, top + pad/4, w - half, top + pad/4 + btnH)
+        canvas.drawRoundRect(rectEdit, btnCornerR, btnCornerR, if (hovered == 2) editHoverPaint else editBgPaint)
+        canvas.drawText("✏️  Editar tradução", rectEdit.left + half, rectEdit.centerY() + labelPaint.textSize / 3, labelPaint)
     }
 }
