@@ -399,7 +399,9 @@ class FloatingService : LifecycleService() {
                 }
                 continuousOcrInProgress = true
                 withContext(Dispatchers.Main) {
-                    OcrProcessor.process(this@FloatingService, bitmap, null) { results ->
+                    // Bug fix: Passar 'crop' para OcrProcessor E para showResults
+                    // Antes: cropRect era null, causando sobreposição de traduções
+                    OcrProcessor.process(this@FloatingService, bitmap, crop) { results ->
                         continuousOcrInProgress = false
                         if (results.isEmpty()) {
                             TranslationOverlay.restore(); GameOverlayManager.restoreForCapture()
@@ -410,7 +412,9 @@ class FloatingService : LifecycleService() {
                             TranslationOverlay.restore(); GameOverlayManager.restoreForCapture()
                             return@process
                         }
-                        showResults(results, crop, isFullScreen = false)
+                        // Passar 'crop' corretamente para manter coordenadas sincronizadas
+                        // forceTranslationMode=true pois modo contínuo SEMPRE usa tradução direta
+                        showResults(results, crop, isFullScreen = false, forceTranslationMode = true)
                     }
                 }
             },
@@ -461,12 +465,30 @@ class FloatingService : LifecycleService() {
     // EXIBIÇÃO DE RESULTADOS
     // ─────────────────────────────────────────────
 
-    private fun showResults(results: List<TextResult>, cropRect: Rect?, isFullScreen: Boolean) {
-        if (gameModeEnabled) {
+    /**
+     * Bug fix: Modo contínuo SEMPRE usa TranslationOverlay, não mini-game.
+     * Mini-game só deve funcionar em Tela Cheia (SINGLE) e Seleção de Área (AREA).
+     * @param forceTranslationMode Se true, força uso de TranslationOverlay (modo contínuo)
+     */
+    private fun showResults(
+        results: List<TextResult>,
+        cropRect: Rect?,
+        isFullScreen: Boolean,
+        forceTranslationMode: Boolean = false
+    ) {
+        // Modo contínuo SEMPRE usa tradução direta, nunca mini-game
+        if (forceTranslationMode) {
+            TranslationOverlay.dismiss(windowManager)
+            TranslationOverlay.show(context = this, windowManager = windowManager,
+                results = results, screenWidth = screenWidth,
+                screenHeight = screenHeight, cropRect = cropRect)
+        } else if (gameModeEnabled) {
+            // Tela Cheia e Seleção de Área: usa mini-game se enabled
             GameOverlayManager.gameModeEnabled = true
             GameOverlayManager.show(context = this, windowManager = windowManager,
                 results = results, filterSystemUi = isFullScreen)
         } else {
+            // Modo tradução direta
             TranslationOverlay.dismiss(windowManager)
             TranslationOverlay.show(context = this, windowManager = windowManager,
                 results = results, screenWidth = screenWidth,

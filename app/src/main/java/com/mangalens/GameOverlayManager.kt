@@ -15,6 +15,7 @@ object GameOverlayManager {
     private const val TAG = "MangaLens_Overlay"
 
     private var overlayView: View? = null
+    private var isRendering = false  // Bug fix: Flag para evitar re-renders simultâneos
     var gameModeEnabled = true
 
     fun hideForCapture() { overlayView?.visibility = View.INVISIBLE }
@@ -109,6 +110,13 @@ object GameOverlayManager {
 
         // Função local — suporta recursão direta em Kotlin sem hacks adicionais
         fun renderCurrent() {
+            // Bug fix: Impedir re-renders simultâneos que causavam mistura de textos
+            if (isRendering) {
+                Log.d(TAG, "Render ignorado: já em progresso")
+                return
+            }
+            isRendering = true
+
             val result  = mutable[currentIndex]
             val hasNext = currentIndex < mutable.lastIndex
 
@@ -159,6 +167,8 @@ object GameOverlayManager {
                 text       = "${currentIndex + 1} / ${mutable.size}"
                 visibility = if (mutable.size > 1) View.VISIBLE else View.GONE
             }
+
+            isRendering = false
         }
 
         renderCurrent()
@@ -590,5 +600,6 @@ object GameOverlayManager {
     private fun removeOverlay(windowManager: WindowManager) {
         overlayView?.let { runCatching { windowManager.removeView(it) } }
         overlayView = null
+        isRendering = false  // Bug fix: Resetar flag ao remover overlay
     }
 }

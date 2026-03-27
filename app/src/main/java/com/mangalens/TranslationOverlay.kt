@@ -428,6 +428,9 @@ class TranslationDrawView(
         val offsetX = cropRect?.left?.toFloat() ?: 0f
         val offsetY = cropRect?.top?.toFloat()  ?: 0f
 
+        // Bug fix: Rastrear último drawTop para evitar sobreposição de traduções
+        val usedRegions = mutableListOf<Pair<Float, Float>>() // (top, bottom) de cada tradução
+
         results.forEachIndexed { idx, result ->
             val box         = result.boundingBox ?: return@forEachIndexed
             val translation = result.translatedText.ifBlank { result.originalText }
@@ -448,6 +451,22 @@ class TranslationDrawView(
             var drawLeft = absLeft.coerceAtMost(screenWidth - boxW)
             var drawTop  = absTop - boxH - 4f * density
             if (drawTop < 0f) drawTop = absBottom + 4f * density
+
+            // Bug fix: Verificar sobreposição com traduções anteriores
+            val minGap = 6f * density  // Espaço mínimo entre traduções
+            for ((prevTop, prevBottom) in usedRegions) {
+                if (drawTop < prevBottom + minGap && drawTop + boxH > prevTop - minGap) {
+                    // Há sobreposição: mover para baixo da região anterior
+                    drawTop = prevBottom + minGap
+                }
+            }
+
+            // Verificar se não saiu da tela
+            if (drawTop + boxH > screenHeight - 50f * density) {
+                drawTop = screenHeight - boxH - 50f * density
+            }
+
+            usedRegions.add(Pair(drawTop, drawTop + boxH))
 
             val boxRect = RectF(drawLeft, drawTop, drawLeft + boxW, drawTop + boxH)
             hitBoxes.add(BubbleHitBox(boxRect, idx))
