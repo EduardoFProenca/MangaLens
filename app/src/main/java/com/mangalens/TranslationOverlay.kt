@@ -68,6 +68,10 @@ object TranslationOverlay {
         overlayView = drawView
     }
 
+    // ─────────────────────────────────────────────
+    // MENU DE CÓPIA/EDIÇÃO — grade 2×2
+    // ─────────────────────────────────────────────
+
     private fun showCopyMenu(
         context: Context,
         windowManager: WindowManager,
@@ -79,25 +83,49 @@ object TranslationOverlay {
         dismissCopyMenu(windowManager)
 
         val menuView = CopyMenuView(
-            context    = context,
-            original   = original,
-            translated = translated,
-            onCopy     = { text, label ->
-                copyToClipboard(context, text, label)
+            context           = context,
+            original          = original,
+            translated        = translated,
+            onCopyOriginal    = {
+                copyToClipboard(context, original, "Original EN")
                 dismissCopyMenu(windowManager)
             },
-            onEdit = {
+            onCopyTranslation = {
+                copyToClipboard(context, translated, "Tradução PT")
+                dismissCopyMenu(windowManager)
+            },
+            onEditOriginal    = {
                 dismissCopyMenu(windowManager)
                 showEditDialog(
                     context       = context,
                     windowManager = windowManager,
+                    title         = "✏️  Corrigir texto original (EN)",
+                    currentText   = original,
+                    onConfirm     = { newOriginal ->
+                        mutableResults[resultIndex] = mutableResults[resultIndex]
+                            .copy(originalText = newOriginal)
+                        OcrProcessor.retranslate(newOriginal) { newTranslation ->
+                            mutableResults[resultIndex] = mutableResults[resultIndex]
+                                .copy(translatedText = newTranslation)
+                            (overlayView as? TranslationDrawView)?.apply {
+                                markEdited(resultIndex); invalidate()
+                            }
+                        }
+                    }
+                )
+            },
+            onEditTranslation = {
+                dismissCopyMenu(windowManager)
+                showEditDialog(
+                    context       = context,
+                    windowManager = windowManager,
+                    title         = "✏️  Corrigir tradução (PT)",
                     currentText   = translated,
                     onConfirm     = { newText ->
                         mutableResults[resultIndex] = mutableResults[resultIndex]
                             .copy(translatedText = newText)
                         (overlayView as? TranslationDrawView)?.apply {
-                            markEdited(resultIndex)
-                            invalidate()
+                            markEdited(resultIndex); invalidate()
                         }
                     }
                 )
@@ -123,9 +151,14 @@ object TranslationOverlay {
         copyMenuView = null
     }
 
+    // ─────────────────────────────────────────────
+    // DIÁLOGO DE EDIÇÃO
+    // ─────────────────────────────────────────────
+
     private fun showEditDialog(
         context: Context,
         windowManager: WindowManager,
+        title: String = "✏️  Corrigir tradução",
         currentText: String,
         onConfirm: (String) -> Unit
     ) {
@@ -145,7 +178,7 @@ object TranslationOverlay {
         }
 
         container.addView(TextView(context).apply {
-            text     = "✏️  Corrigir tradução"
+            text     = title
             textSize = 14f
             setTextColor(Color.argb(200, 180, 180, 255))
             setPadding(0, 0, 0, (10*density).toInt())
@@ -156,7 +189,7 @@ object TranslationOverlay {
             textSize     = 15f
             setTextColor(Color.WHITE)
             setHintTextColor(Color.GRAY)
-            hint         = "Digite a tradução corrigida..."
+            hint         = "Digite o texto corrigido..."
             background   = null
             setBackgroundColor(Color.argb(80, 100, 100, 180))
             setPadding((12*density).toInt(), (10*density).toInt(),
@@ -258,7 +291,7 @@ object TranslationOverlay {
 }
 
 // ─────────────────────────────────────────────────────
-// VIEW DE DESENHO
+// VIEW DE DESENHO (inalterada)
 // ─────────────────────────────────────────────────────
 
 @SuppressLint("ClickableViewAccessibility")
@@ -276,9 +309,6 @@ class TranslationDrawView(
 
     private val density = context.resources.displayMetrics.density
 
-    // CORREÇÃO: renomeado de scaleX/scaleY → bitmapScaleX/bitmapScaleY
-    // View já herda scaleX e scaleY públicos; redeclará-los causa
-    // "Accidental override: same JVM signature (getScaleX/getScaleY)".
     private val bitmapScaleX: Float get() {
         val bmpW = if (bitmapWidth > 0) bitmapWidth else screenWidth
         val displayW = cropRect?.width() ?: screenWidth
@@ -382,7 +412,6 @@ class TranslationDrawView(
             val translation = result.translatedText.ifBlank { result.originalText }
             val isEdited    = idx in editedIndices
 
-            // Usa bitmapScaleX/bitmapScaleY (renomeados para evitar conflito com View)
             val screenLeft   = box.left   * bitmapScaleX + offsetX
             val screenTop    = box.top    * bitmapScaleY + offsetY
             val screenRight  = box.right  * bitmapScaleX + offsetX
@@ -436,7 +465,8 @@ class TranslationDrawView(
 }
 
 // ─────────────────────────────────────────────────────
-// MENU FLUTUANTE: Copiar EN | Copiar PT | Editar
+// MENU GRADE 2×2: Copiar EN | Editar EN
+//                 Copiar PT | Editar PT
 // ─────────────────────────────────────────────────────
 
 @SuppressLint("ClickableViewAccessibility")
@@ -444,77 +474,158 @@ class CopyMenuView(
     context: Context,
     private val original: String,
     private val translated: String,
-    private val onCopy: (text: String, label: String) -> Unit,
-    private val onEdit: () -> Unit,
+    private val onCopyOriginal: () -> Unit,
+    private val onCopyTranslation: () -> Unit,
+    private val onEditOriginal: () -> Unit,
+    private val onEditTranslation: () -> Unit,
     private val onDismiss: () -> Unit
 ) : View(context) {
 
-    private val density    = context.resources.displayMetrics.density
-    private val pad        = 16f * density
-    private val btnH       = 48f * density
-    private val menuW      = 270f * density
-    private val cornerR    = 12f * density
-    private val btnCornerR = 8f  * density
+    private val density = context.resources.displayMetrics.density
 
-    private val bgPaint        = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(248, 25, 25, 48); style = Paint.Style.FILL }
-    private val strokePaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 120, 120, 220); style = Paint.Style.STROKE; strokeWidth = 1.5f }
-    private val btnBgPaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(80, 100, 100, 200); style = Paint.Style.FILL }
-    private val btnHoverPaint  = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 120, 120, 255); style = Paint.Style.FILL }
-    private val editBgPaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(80, 50, 140, 80); style = Paint.Style.FILL }
-    private val editHoverPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 60, 180, 90); style = Paint.Style.FILL }
-    private val labelPaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 13f * density; typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD) }
-    private val previewPaint   = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 200, 220, 255); textSize = 11f * density }
-    private val dividerPaint   = Paint().apply { color = Color.argb(55, 200, 200, 255); strokeWidth = 1f }
+    // Dimensões da grade
+    private val edgePad  = 12f * density   // padding externo
+    private val gap      = 8f  * density   // espaço entre células
+    private val cellH    = 90f * density   // altura de cada célula
+    private val menuW    = 290f * density  // largura total do menu
+    private val cornerR  = 14f * density   // cantos do menu
+    private val cellCorner = 10f * density // cantos de cada célula
 
-    private var rectEN = RectF(); private var rectPT = RectF(); private var rectEdit = RectF()
-    private var hovered = -1
+    // Largura de cada célula = (totalW - 2*edge - gap) / 2
+    private val cellW get() = (menuW - edgePad * 2 - gap) / 2f
 
-    init {
-        setOnTouchListener { _, event ->
-            val x = event.x; val y = event.y
-            val inEN = rectEN.contains(x, y); val inPT = rectPT.contains(x, y); val inEdit = rectEdit.contains(x, y)
-            when (event.action) {
-                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                    hovered = when { inEN -> 0; inPT -> 1; inEdit -> 2; else -> -1 }; invalidate(); true
-                }
-                MotionEvent.ACTION_UP -> {
-                    hovered = -1; invalidate()
-                    when { inEN -> onCopy(original, "Original EN"); inPT -> onCopy(translated, "Tradução PT"); inEdit -> onEdit(); else -> onDismiss() }
-                    true
-                }
-                MotionEvent.ACTION_CANCEL -> { hovered = -1; invalidate(); true }
-                else -> false
-            }
-        }
+    // Altura total = borda sup + linha1 + gap + linha2 + borda inf
+    private val totalH get() = edgePad + cellH + gap + cellH + edgePad
+
+    // Cores de fundo por célula
+    private val colorCopyEN  = Color.argb(200, 30, 50, 110)   // azul escuro
+    private val colorEditEN  = Color.argb(200, 50, 30, 110)   // roxo escuro
+    private val colorCopyPT  = Color.argb(200, 20, 90, 50)    // verde escuro
+    private val colorEditPT  = Color.argb(200, 90, 60, 20)    // âmbar escuro
+    private val hoverAlpha   = 60                              // opacidade extra no hover
+
+    // Tintas
+    private val bgPaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(252, 18, 18, 38); style = Paint.Style.FILL
+    }
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(120, 140, 140, 220); style = Paint.Style.STROKE; strokeWidth = 1.5f
+    }
+    private val cellPaint   = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val hoverPaint  = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(hoverAlpha, 255, 255, 255); style = Paint.Style.FILL
+    }
+    private val iconPaint   = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 24f * density; textAlign = Paint.Align.CENTER
+    }
+    private val labelPaint  = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color    = Color.WHITE
+        textSize = 11f * density
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        textAlign = Paint.Align.CENTER
+    }
+    private val subPaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color    = Color.argb(170, 210, 210, 255)
+        textSize = 9.5f * density
+        textAlign = Paint.Align.CENTER
     }
 
-    override fun onMeasure(w: Int, h: Int) {
-        setMeasuredDimension(menuW.toInt(), (pad/2 + btnH + pad/4 + btnH + pad/4 + btnH + pad/2).toInt())
+    // Células: (rect, cor, ícone, linha1, linha2, callback)
+    private data class Cell(
+        var rect: RectF,
+        val color: Int,
+        val icon: String,
+        val line1: String,
+        val line2: String,
+        val action: () -> Unit
+    )
+
+    private val cells = mutableListOf<Cell>()
+    private var hoveredCell = -1
+
+    init { buildCells() }
+
+    private fun buildCells() {
+        cells.clear()
+        val x0 = edgePad
+        val x1 = edgePad + cellW + gap
+        val y0 = edgePad
+        val y1 = edgePad + cellH + gap
+
+        cells.add(Cell(RectF(x0, y0, x0 + cellW, y0 + cellH),
+            colorCopyEN, "📋", "Copiar Original", "(EN)", onCopyOriginal))
+        cells.add(Cell(RectF(x1, y0, x1 + cellW, y0 + cellH),
+            colorEditEN, "✏️", "Editar Original", "(EN)", onEditOriginal))
+        cells.add(Cell(RectF(x0, y1, x0 + cellW, y1 + cellH),
+            colorCopyPT, "🌐", "Copiar Tradução", "(PT)", onCopyTranslation))
+        cells.add(Cell(RectF(x1, y1, x1 + cellW, y1 + cellH),
+            colorEditPT, "✏️", "Editar Tradução", "(PT)", onEditTranslation))
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        setMeasuredDimension(menuW.toInt(), totalH.toInt())
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        buildCells() // recalcula com dimensões reais
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val w = width.toFloat()
-        canvas.drawRoundRect(RectF(0f, 0f, w, height.toFloat()), cornerR, cornerR, bgPaint)
-        canvas.drawRoundRect(RectF(0f, 0f, w, height.toFloat()), cornerR, cornerR, strokePaint)
-        val half = pad / 2; var top = half
+        val w = width.toFloat(); val h = height.toFloat()
 
-        rectEN = RectF(half, top, w - half, top + btnH)
-        canvas.drawRoundRect(rectEN, btnCornerR, btnCornerR, if (hovered == 0) btnHoverPaint else btnBgPaint)
-        canvas.drawText("📋  Copiar Original (EN)", rectEN.left + half, rectEN.top + btnH * 0.42f, labelPaint)
-        canvas.drawText(original.take(34) + if (original.length > 34) "…" else "", rectEN.left + half, rectEN.top + btnH * 0.78f, previewPaint)
+        // Fundo do menu
+        canvas.drawRoundRect(RectF(0f, 0f, w, h), cornerR, cornerR, bgPaint)
+        canvas.drawRoundRect(RectF(0f, 0f, w, h), cornerR, cornerR, borderPaint)
 
-        top += btnH + pad/4; canvas.drawLine(pad, top, w - pad, top, dividerPaint)
+        cells.forEachIndexed { idx, cell ->
+            // Fundo colorido da célula
+            cellPaint.color = cell.color
+            canvas.drawRoundRect(cell.rect, cellCorner, cellCorner, cellPaint)
 
-        rectPT = RectF(half, top + pad/4, w - half, top + pad/4 + btnH)
-        canvas.drawRoundRect(rectPT, btnCornerR, btnCornerR, if (hovered == 1) btnHoverPaint else btnBgPaint)
-        canvas.drawText("🌐  Copiar Tradução (PT)", rectPT.left + half, rectPT.top + btnH * 0.42f, labelPaint)
-        canvas.drawText(translated.take(34) + if (translated.length > 34) "…" else "", rectPT.left + half, rectPT.top + btnH * 0.78f, previewPaint)
+            // Hover overlay
+            if (idx == hoveredCell) {
+                canvas.drawRoundRect(cell.rect, cellCorner, cellCorner, hoverPaint)
+            }
 
-        top = rectPT.bottom + pad/4; canvas.drawLine(pad, top, w - pad, top, dividerPaint)
+            // Borda suave da célula
+            borderPaint.alpha = 60
+            canvas.drawRoundRect(cell.rect, cellCorner, cellCorner, borderPaint)
+            borderPaint.alpha = 120
 
-        rectEdit = RectF(half, top + pad/4, w - half, top + pad/4 + btnH)
-        canvas.drawRoundRect(rectEdit, btnCornerR, btnCornerR, if (hovered == 2) editHoverPaint else editBgPaint)
-        canvas.drawText("✏️  Editar tradução", rectEdit.left + half, rectEdit.centerY() + labelPaint.textSize / 3, labelPaint)
+            val cx = cell.rect.centerX()
+            val cy = cell.rect.centerY()
+
+            // Ícone
+            canvas.drawText(cell.icon, cx, cy - 14f * density, iconPaint)
+
+            // Linha 1 (nome da ação)
+            canvas.drawText(cell.line1, cx, cy + 12f * density, labelPaint)
+
+            // Linha 2 (idioma)
+            canvas.drawText(cell.line2, cx, cy + 24f * density, subPaint)
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val x = event.x; val y = event.y
+        return when (event.action) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                hoveredCell = cells.indexOfFirst { it.rect.contains(x, y) }
+                invalidate(); true
+            }
+            MotionEvent.ACTION_UP -> {
+                val hit = cells.indexOfFirst { it.rect.contains(x, y) }
+                hoveredCell = -1; invalidate()
+                if (hit >= 0) cells[hit].action() else onDismiss()
+                true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                hoveredCell = -1; invalidate(); true
+            }
+            else -> false
+        }
     }
 }
