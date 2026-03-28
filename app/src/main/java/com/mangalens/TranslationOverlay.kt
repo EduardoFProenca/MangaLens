@@ -292,15 +292,16 @@ class TranslationDrawView(
 
     private val density = context.resources.displayMetrics.density
 
-    // Fatores de escala: converte coordenadas do bitmap → coordenadas da tela
-    // Quando cropRect≠null, o bitmap é o recorte; as coordenadas são relativas a ele.
-    // O offsetX/Y adiciona a posição do recorte na tela.
-    private val scaleX: Float get() {
+    // ── CORREÇÃO: renomeado de scaleX/scaleY para bitmapScaleX/bitmapScaleY ──
+    // View já possui propriedades públicas scaleX e scaleY; redeclará-las
+    // causa "Accidental override" porque o Kotlin gera getters com o mesmo
+    // nome JVM (getScaleX / getScaleY).
+    private val bitmapScaleX: Float get() {
         val bmpW = if (bitmapWidth > 0) bitmapWidth else screenWidth
         val displayW = cropRect?.width() ?: screenWidth
         return displayW.toFloat() / bmpW.toFloat()
     }
-    private val scaleY: Float get() {
+    private val bitmapScaleY: Float get() {
         val bmpH = if (bitmapHeight > 0) bitmapHeight else screenHeight
         val displayH = cropRect?.height() ?: screenHeight
         return displayH.toFloat() / bmpH.toFloat()
@@ -330,7 +331,6 @@ class TranslationDrawView(
         textSize = 10f * density
         setShadowLayer(4f, 0f, 2f, Color.BLACK)
     }
-    // Sombra sutil atrás do texto original para indicar que está coberto
     private val coverPaint = Paint().apply {
         color = Color.argb(12, 0, 0, 0); style = Paint.Style.FILL
     }
@@ -400,44 +400,33 @@ class TranslationDrawView(
             val isEdited    = idx in editedIndices
 
             // ── Converte coordenadas do OCR → coordenadas da tela ─────────
-            // As boundingBoxes são em coordenadas do bitmap (possivelmente cropado).
-            // scaleX/scaleY ajustam caso o bitmap tenha tamanho diferente da tela.
-            // offsetX/Y reposiciona o recorte na tela.
-            val screenLeft   = box.left   * scaleX + offsetX
-            val screenTop    = box.top    * scaleY + offsetY
-            val screenRight  = box.right  * scaleX + offsetX
-            val screenBottom = box.bottom * scaleY + offsetY
+            // Usa bitmapScaleX/bitmapScaleY (renomeados para evitar conflito com View)
+            val screenLeft   = box.left   * bitmapScaleX + offsetX
+            val screenTop    = box.top    * bitmapScaleY + offsetY
+            val screenRight  = box.right  * bitmapScaleX + offsetX
+            val screenBottom = box.bottom * bitmapScaleY + offsetY
 
             // ── Calcula tamanho da caixa de tradução ──────────────────────
             val paint      = if (isEdited) editedTextPaint else textPaint
-            // Largura da caixa = largura do boundingBox original (mantém âncora)
             val boxWidth   = (screenRight - screenLeft).coerceAtLeast(60f * density)
             val lines      = wrapText(translation, paint, boxWidth - padH * 2)
             val lineHeight = paint.fontSpacing
             val boxH       = lines.size * lineHeight + padV * 2
 
             // ── Posicionamento: SEMPRE colado ao texto original ───────────
-            // Estratégia: tenta colocar ACIMA do texto (mais natural para mangá).
-            // Se não couber acima, coloca ABAIXO.
-            // NÃO empurra para outros lugares — fica ancorado ao boundingBox.
             var bubbleTop = screenTop - boxH - 2f * density
             if (bubbleTop < 0f) {
-                // Não cabe acima → tenta abaixo
                 bubbleTop = screenBottom + 2f * density
             }
-            // Garante que não ultrapasse a borda inferior da tela
             if (bubbleTop + boxH > screenHeight) {
-                // Último recurso: sobrepõe o texto (dentro do próprio boundingBox)
                 bubbleTop = screenTop
             }
 
-            // Alinha horizontalmente com o texto — clamped para não sair da tela
             val bubbleLeft = screenLeft.coerceIn(0f, (screenWidth - boxWidth).coerceAtLeast(0f))
 
             val boxRect = RectF(bubbleLeft, bubbleTop, bubbleLeft + boxWidth, bubbleTop + boxH)
             hitBoxes.add(BubbleHitBox(boxRect, idx))
 
-            // Sombra muito leve sobre a área do texto original
             canvas.drawRect(screenLeft, screenTop, screenRight, screenBottom, coverPaint)
 
             if (idx == highlightedIndex) canvas.drawRoundRect(boxRect, cornerR, cornerR, highlightPaint)
@@ -455,7 +444,6 @@ class TranslationDrawView(
                 )
             }
 
-            // Ícone de ação no canto
             canvas.drawText(
                 if (isEdited) "✏️" else "📋",
                 bubbleLeft + boxWidth - padH * 2.5f,
@@ -464,7 +452,6 @@ class TranslationDrawView(
             )
         }
 
-        // Dica rodapé
         val hint = "Toque para copiar/editar • Fora para fechar"
         canvas.drawText(
             hint,
