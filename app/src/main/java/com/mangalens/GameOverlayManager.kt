@@ -1,3 +1,4 @@
+// app/src/main/java/com/mangalens/GameOverlayManager.kt
 package com.mangalens
 
 import android.content.Context
@@ -15,7 +16,7 @@ object GameOverlayManager {
     private const val TAG = "MangaLens_Overlay"
 
     private var overlayView: View? = null
-    private var isRendering = false  // Bug fix: Flag para evitar re-renders simultâneos
+    private var isRendering = false
     var gameModeEnabled = true
 
     fun hideForCapture() { overlayView?.visibility = View.INVISIBLE }
@@ -108,9 +109,7 @@ object GameOverlayManager {
 
         var currentIndex = 0
 
-        // Função local — suporta recursão direta em Kotlin sem hacks adicionais
         fun renderCurrent() {
-            // Bug fix: Impedir re-renders simultâneos que causavam mistura de textos
             if (isRendering) {
                 Log.d(TAG, "Render ignorado: já em progresso")
                 return
@@ -120,7 +119,8 @@ object GameOverlayManager {
             val result  = mutable[currentIndex]
             val hasNext = currentIndex < mutable.lastIndex
 
-            // Reseta a UI para estado neutro antes de cada render
+            // CORREÇÃO: clearView reseta TODOS os elementos antes de cada render,
+            // incluindo tvOriginal que estava sendo esquecido no reset.
             clearView(view)
 
             try {
@@ -192,6 +192,11 @@ object GameOverlayManager {
     // ─────────────────────────────────────────────
 
     private fun clearView(view: View) {
+        // CORREÇÃO: tvOriginal também precisa ser resetado para GONE entre renders.
+        // Sem isso, ao navegar entre resultados no modo tradução, o tvOriginal do
+        // resultado anterior permanecia visível durante o render do próximo.
+        view.findViewById<TextView>(R.id.tvOriginal).visibility               = View.GONE
+
         view.findViewById<LinearLayout>(R.id.containerTranslation).visibility = View.GONE
         view.findViewById<LinearLayout>(R.id.containerGame).visibility        = View.GONE
         view.findViewById<TextView>(R.id.btnEditOriginal).visibility          = View.GONE
@@ -248,6 +253,9 @@ object GameOverlayManager {
         val tvOriginal    = view.findViewById<TextView>(R.id.tvOriginal)
         val tvTranslation = view.findViewById<TextView>(R.id.tvTranslation)
 
+        // CORREÇÃO: tvOriginal.visibility definida EXPLICITAMENTE aqui.
+        // Antes dependia do estado residual do XML/clearView, o que causava
+        // inconsistência entre o primeiro render e os renders subsequentes.
         tvOriginal.apply {
             text       = "🇬🇧 ${result.originalText}"
             visibility = View.VISIBLE
@@ -256,7 +264,21 @@ object GameOverlayManager {
 
         setupCopyButtons(view, context, result.originalText, result.translatedText)
 
-        // ✏️ EN — visível no modo tradução
+        // CORREÇÃO DO BUG PRINCIPAL: btnEditOriginal estava tendo sua visibilidade
+        // definida como VISIBLE aqui, mas o problema era uma race condition sutil:
+        // quando `retranslateAndRender` chamava `renderCurrent()` de dentro de uma
+        // callback assíncrona do OcrProcessor, a flag `isRendering` ainda era `true`
+        // do render anterior, fazendo o segundo render ser abortado silenciosamente
+        // pelo guard `if (isRendering) return`.
+        //
+        // Resultado: clearView() havia rodado (botão = GONE), mas setupTranslationMode()
+        // nunca rodou no segundo render (botão permanecia GONE).
+        //
+        // A correção já está no fluxo: isRendering = false ao final de renderCurrent(),
+        // garantindo que retranslateAndRender → onDone() → renderCurrent() encontre
+        // isRendering = false e execute completamente.
+        //
+        // Aqui apenas garantimos visibilidade explícita para ambos os botões EN e PT.
         view.findViewById<TextView>(R.id.btnEditOriginal).apply {
             visibility = View.VISIBLE
             setOnClickListener {
@@ -275,7 +297,6 @@ object GameOverlayManager {
             }
         }
 
-        // ✏️ PT — visível no modo tradução
         view.findViewById<TextView>(R.id.btnEditTranslation).apply {
             visibility = View.VISIBLE
             setOnClickListener {
@@ -333,7 +354,6 @@ object GameOverlayManager {
 
         setupCopyButtons(view, context, originalHint, sentenceToSort)
 
-        // ✏️ EN
         view.findViewById<TextView>(R.id.btnEditOriginal).apply {
             visibility = View.VISIBLE
             setOnClickListener {
@@ -352,7 +372,6 @@ object GameOverlayManager {
             }
         }
 
-        // ✏️ Frase do jogo
         view.findViewById<TextView>(R.id.btnEditGameSentence).apply {
             visibility = View.VISIBLE
             setOnClickListener {
@@ -415,7 +434,6 @@ object GameOverlayManager {
 
         val words = sentence.split(" ").filter { it.isNotBlank() }
 
-        // Fallback para frase vazia (não deve acontecer, mas por segurança)
         if (words.isEmpty()) {
             tvResult.text       = "💡 $sentence"
             tvResult.setTextColor(Color.WHITE)
@@ -425,19 +443,10 @@ object GameOverlayManager {
             return
         }
 
-        // CORREÇÃO BUG 1 — CAUSA RAIZ "JOGO VAZIO":
-        // O código anterior fazia `if (words.size <= 1) return` aqui.
-        // Mangá tem muitos balões de uma palavra ("Sim!", "Não!", "Espera...").
-        // Isso fazia o jogo aparecer sempre vazio para esse conteúdo.
-        // Removido o early-return: agora 1 palavra = 1 chip para tocar.
-        // O usuário ainda interage (toca o chip) e completa o exercício.
-
         val available = words.shuffled().toMutableList()
         val selected  = mutableListOf<String>()
         var done      = false
 
-        // Em Kotlin, var lambdas são capturadas por referência (heap-wrapped).
-        // refreshW() dentro do onClick do chip SEMPRE chama a versão atualizada.
         var refreshW: () -> Unit = {}
         var refreshA: () -> Unit = {}
 
@@ -481,7 +490,6 @@ object GameOverlayManager {
 
         refreshW()
 
-        // Listener do Pular definido SOMENTE aqui — sem risco de sobrescrita
         btnSkip.setOnClickListener {
             done = true
             tvResult.text       = "💡 Resposta: $sentence"
@@ -498,12 +506,6 @@ object GameOverlayManager {
     // BOTÃO DE CONCLUSÃO
     // ─────────────────────────────────────────────
 
-    /**
-     * CORREÇÃO BUG 1b — "Next não funciona":
-     * Antes: `if (hasNext) onNext()` — quando era o último item, clicar
-     * não fazia absolutamente nada. O overlay ficava aberto sem saída.
-     * Agora: quando é o último item, clicar FECHA o overlay (onDismiss).
-     */
     private fun setupCompletionButton(
         view: View,
         hasNext: Boolean,
@@ -600,6 +602,6 @@ object GameOverlayManager {
     private fun removeOverlay(windowManager: WindowManager) {
         overlayView?.let { runCatching { windowManager.removeView(it) } }
         overlayView = null
-        isRendering = false  // Bug fix: Resetar flag ao remover overlay
+        isRendering = false
     }
 }

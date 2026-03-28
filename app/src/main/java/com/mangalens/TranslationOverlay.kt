@@ -32,8 +32,6 @@ object TranslationOverlay {
         screenWidth: Int  = context.resources.displayMetrics.widthPixels,
         screenHeight: Int = context.resources.displayMetrics.heightPixels,
         cropRect: Rect?   = null,
-        // Dimensões reais do bitmap que o OCR processou.
-        // Necessário para converter coordenadas do OCR → coordenadas de tela.
         bitmapWidth: Int  = screenWidth,
         bitmapHeight: Int = screenHeight
     ) {
@@ -69,10 +67,6 @@ object TranslationOverlay {
         windowManager.addView(drawView, params)
         overlayView = drawView
     }
-
-    // ─────────────────────────────────────────────
-    // MENU DE CÓPIA + EDIÇÃO
-    // ─────────────────────────────────────────────
 
     private fun showCopyMenu(
         context: Context,
@@ -128,10 +122,6 @@ object TranslationOverlay {
         copyMenuView?.let { runCatching { windowManager.removeView(it) } }
         copyMenuView = null
     }
-
-    // ─────────────────────────────────────────────
-    // DIALOG DE EDIÇÃO (focável para teclado)
-    // ─────────────────────────────────────────────
 
     private fun showEditDialog(
         context: Context,
@@ -238,10 +228,6 @@ object TranslationOverlay {
         editDialogView = null
     }
 
-    // ─────────────────────────────────────────────
-    // HIDE / RESTORE / DISMISS
-    // ─────────────────────────────────────────────
-
     fun hide() {
         overlayView?.visibility    = View.INVISIBLE
         copyMenuView?.visibility   = View.INVISIBLE
@@ -272,7 +258,7 @@ object TranslationOverlay {
 }
 
 // ─────────────────────────────────────────────────────
-// VIEW DE DESENHO — ANCORAGEM PRECISA AO TEXTO ORIGINAL
+// VIEW DE DESENHO
 // ─────────────────────────────────────────────────────
 
 @SuppressLint("ClickableViewAccessibility")
@@ -282,8 +268,6 @@ class TranslationDrawView(
     private val screenWidth: Int,
     private val screenHeight: Int,
     private val cropRect: Rect?,
-    // Dimensões do bitmap processado pelo OCR.
-    // Podem diferir das dimensões da tela quando há escalonamento.
     private val bitmapWidth: Int,
     private val bitmapHeight: Int,
     private val onDismiss: () -> Unit,
@@ -292,10 +276,9 @@ class TranslationDrawView(
 
     private val density = context.resources.displayMetrics.density
 
-    // ── CORREÇÃO: renomeado de scaleX/scaleY para bitmapScaleX/bitmapScaleY ──
-    // View já possui propriedades públicas scaleX e scaleY; redeclará-las
-    // causa "Accidental override" porque o Kotlin gera getters com o mesmo
-    // nome JVM (getScaleX / getScaleY).
+    // CORREÇÃO: renomeado de scaleX/scaleY → bitmapScaleX/bitmapScaleY
+    // View já herda scaleX e scaleY públicos; redeclará-los causa
+    // "Accidental override: same JVM signature (getScaleX/getScaleY)".
     private val bitmapScaleX: Float get() {
         val bmpW = if (bitmapWidth > 0) bitmapWidth else screenWidth
         val displayW = cropRect?.width() ?: screenWidth
@@ -399,66 +382,44 @@ class TranslationDrawView(
             val translation = result.translatedText.ifBlank { result.originalText }
             val isEdited    = idx in editedIndices
 
-            // ── Converte coordenadas do OCR → coordenadas da tela ─────────
             // Usa bitmapScaleX/bitmapScaleY (renomeados para evitar conflito com View)
             val screenLeft   = box.left   * bitmapScaleX + offsetX
             val screenTop    = box.top    * bitmapScaleY + offsetY
             val screenRight  = box.right  * bitmapScaleX + offsetX
             val screenBottom = box.bottom * bitmapScaleY + offsetY
 
-            // ── Calcula tamanho da caixa de tradução ──────────────────────
-            val paint      = if (isEdited) editedTextPaint else textPaint
-            val boxWidth   = (screenRight - screenLeft).coerceAtLeast(60f * density)
+            val paint    = if (isEdited) editedTextPaint else textPaint
+            val boxWidth = (screenRight - screenLeft).coerceAtLeast(60f * density)
             val lines      = wrapText(translation, paint, boxWidth - padH * 2)
             val lineHeight = paint.fontSpacing
             val boxH       = lines.size * lineHeight + padV * 2
 
-            // ── Posicionamento: SEMPRE colado ao texto original ───────────
             var bubbleTop = screenTop - boxH - 2f * density
-            if (bubbleTop < 0f) {
-                bubbleTop = screenBottom + 2f * density
-            }
-            if (bubbleTop + boxH > screenHeight) {
-                bubbleTop = screenTop
-            }
+            if (bubbleTop < 0f) bubbleTop = screenBottom + 2f * density
+            if (bubbleTop + boxH > screenHeight) bubbleTop = screenTop
 
             val bubbleLeft = screenLeft.coerceIn(0f, (screenWidth - boxWidth).coerceAtLeast(0f))
-
             val boxRect = RectF(bubbleLeft, bubbleTop, bubbleLeft + boxWidth, bubbleTop + boxH)
             hitBoxes.add(BubbleHitBox(boxRect, idx))
 
             canvas.drawRect(screenLeft, screenTop, screenRight, screenBottom, coverPaint)
-
             if (idx == highlightedIndex) canvas.drawRoundRect(boxRect, cornerR, cornerR, highlightPaint)
-
             canvas.drawRoundRect(boxRect, cornerR, cornerR, bubblePaint)
             canvas.drawRoundRect(boxRect, cornerR, cornerR,
                 if (isEdited) editedStrokePaint else bubbleStrokePaint)
 
             lines.forEachIndexed { i, line ->
-                canvas.drawText(
-                    line,
-                    bubbleLeft + padH,
-                    bubbleTop + padV + lineHeight * i + paint.textSize,
-                    paint
-                )
+                canvas.drawText(line, bubbleLeft + padH,
+                    bubbleTop + padV + lineHeight * i + paint.textSize, paint)
             }
-
-            canvas.drawText(
-                if (isEdited) "✏️" else "📋",
+            canvas.drawText(if (isEdited) "✏️" else "📋",
                 bubbleLeft + boxWidth - padH * 2.5f,
-                bubbleTop + padV + paint.textSize,
-                hintPaint
-            )
+                bubbleTop + padV + paint.textSize, hintPaint)
         }
 
         val hint = "Toque para copiar/editar • Fora para fechar"
-        canvas.drawText(
-            hint,
-            (width - hintPaint.measureText(hint)) / 2f,
-            height - 20f * density,
-            hintPaint
-        )
+        canvas.drawText(hint, (width - hintPaint.measureText(hint)) / 2f,
+            height - 20f * density, hintPaint)
     }
 
     private fun wrapText(text: String, paint: Paint, maxWidth: Float): List<String> {
@@ -495,24 +456,23 @@ class CopyMenuView(
     private val cornerR    = 12f * density
     private val btnCornerR = 8f  * density
 
-    private val bgPaint         = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(248, 25, 25, 48); style = Paint.Style.FILL }
-    private val strokePaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 120, 120, 220); style = Paint.Style.STROKE; strokeWidth = 1.5f }
-    private val btnBgPaint      = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(80, 100, 100, 200); style = Paint.Style.FILL }
-    private val btnHoverPaint   = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 120, 120, 255); style = Paint.Style.FILL }
-    private val editBgPaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(80, 50, 140, 80); style = Paint.Style.FILL }
-    private val editHoverPaint  = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 60, 180, 90); style = Paint.Style.FILL }
-    private val labelPaint      = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 13f * density; typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD) }
-    private val previewPaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 200, 220, 255); textSize = 11f * density }
-    private val dividerPaint    = Paint().apply { color = Color.argb(55, 200, 200, 255); strokeWidth = 1f }
+    private val bgPaint        = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(248, 25, 25, 48); style = Paint.Style.FILL }
+    private val strokePaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 120, 120, 220); style = Paint.Style.STROKE; strokeWidth = 1.5f }
+    private val btnBgPaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(80, 100, 100, 200); style = Paint.Style.FILL }
+    private val btnHoverPaint  = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 120, 120, 255); style = Paint.Style.FILL }
+    private val editBgPaint    = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(80, 50, 140, 80); style = Paint.Style.FILL }
+    private val editHoverPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 60, 180, 90); style = Paint.Style.FILL }
+    private val labelPaint     = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 13f * density; typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD) }
+    private val previewPaint   = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 200, 220, 255); textSize = 11f * density }
+    private val dividerPaint   = Paint().apply { color = Color.argb(55, 200, 200, 255); strokeWidth = 1f }
 
-    private var rectEN   = RectF(); private var rectPT   = RectF(); private var rectEdit = RectF()
-    private var hovered  = -1
+    private var rectEN = RectF(); private var rectPT = RectF(); private var rectEdit = RectF()
+    private var hovered = -1
 
     init {
         setOnTouchListener { _, event ->
             val x = event.x; val y = event.y
-            val inEN = rectEN.contains(x, y); val inPT = rectPT.contains(x, y)
-            val inEdit = rectEdit.contains(x, y)
+            val inEN = rectEN.contains(x, y); val inPT = rectPT.contains(x, y); val inEdit = rectEdit.contains(x, y)
             when (event.action) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                     hovered = when { inEN -> 0; inPT -> 1; inEdit -> 2; else -> -1 }; invalidate(); true

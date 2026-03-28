@@ -22,10 +22,10 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
-import com.mangalens.R
 import kotlinx.coroutines.*
 
-class FloatingService : LifecycleService() {
+class
+FloatingService : LifecycleService() {
 
     private lateinit var windowManager: WindowManager
     private lateinit var floatingRoot: View
@@ -347,6 +347,7 @@ class FloatingService : LifecycleService() {
                 }
                 continuousOcrInProgress = true
 
+                // Registra dimensões do bitmap para escala correta
                 lastBitmapWidth  = bitmap.width
                 lastBitmapHeight = bitmap.height
 
@@ -389,6 +390,7 @@ class FloatingService : LifecycleService() {
                 return@launch
             }
 
+            // Registra dimensões reais do bitmap
             lastBitmapWidth  = bitmap.width
             lastBitmapHeight = bitmap.height
 
@@ -425,6 +427,7 @@ class FloatingService : LifecycleService() {
                 screenWidth   = screenWidth,
                 screenHeight  = screenHeight,
                 cropRect      = cropRect,
+                // ← passa as dimensões reais do bitmap para escala correta
                 bitmapWidth   = if (cropRect != null) cropRect.width()  else lastBitmapWidth.takeIf { it > 0 } ?: screenWidth,
                 bitmapHeight  = if (cropRect != null) cropRect.height() else lastBitmapHeight.takeIf { it > 0 } ?: screenHeight
             )
