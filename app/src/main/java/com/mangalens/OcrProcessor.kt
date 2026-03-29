@@ -25,6 +25,12 @@ object OcrProcessor {
 
     private const val TAG = "MangaLens_OCR"
 
+    // ── Padding APENAS no eixo Y (cima e baixo) ──────────────────────────
+    // Balões de mangá têm linhas de texto próximas à borda superior/inferior.
+    // Aumentar só o vertical evita incluir texto de balões vizinhos nas laterais.
+    private const val CROP_PAD_TOP_BOTTOM_PX = 40  // pixels extras em cima e embaixo
+    // Horizontal: zero — não mexemos nas laterais conforme solicitado.
+
     private val recognizer: TextRecognizer =
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
@@ -67,9 +73,7 @@ object OcrProcessor {
         val src  = if (isJa) TranslateLanguage.JAPANESE else TranslateLanguage.ENGLISH
         val tgt  = TranslateLanguage.PORTUGUESE
         val key  = "$src->$tgt"
-
         if (modelReady[key] != true) { onResult(text); return }
-
         getOrCreateTranslator(src, tgt).translate(text)
             .addOnSuccessListener { onResult(it) }
             .addOnFailureListener { onResult(text) }
@@ -92,36 +96,23 @@ object OcrProcessor {
             .addOnSuccessListener { visionText ->
                 Log.d(TAG, "OCR raw: ${visionText.text.trim().take(200)}")
 
-                // ── Coleta blocos individuais do ML Kit ───────────────────
-                // Cada textBlock do ML Kit já representa uma região coesa
-                // (o próprio algoritmo do Google agrupa linhas dentro de um bloco).
-                // NÃO fazemos merge adicional entre blocos — isso é o que causava
-                // balões diferentes serem fundidos numa única tradução.
                 val blocks: List<Pair<String, Rect?>> = visionText.textBlocks
                     .mapNotNull { block ->
                         val text = block.text.trim()
                         if (text.isBlank()) return@mapNotNull null
-                        // Merge de linhas DENTRO do mesmo bloco (já coeso)
-                        // mas nunca entre blocos diferentes
                         Pair(text, block.boundingBox)
                     }
                     .filter { (text, _) -> text.length >= 2 }
 
                 Log.d(TAG, "Blocos após coleta: ${blocks.size}")
-
                 if (blocks.isEmpty()) { onResult(emptyList()); return@addOnSuccessListener }
 
-                // ── Filtra blocos muito grandes (ruído de fundo) ──────────
-                // Um bloco que abrange mais de 60% da largura E tem texto curto
-                // provavelmente é ruído (UI do sistema, watermark, etc.)
                 val filtered = blocks.filter { (text, box) ->
                     if (box == null) return@filter true
                     val widthFraction = box.width().toFloat() / source.width
-                    // Mantém se: texto longo OU não ocupa quase a tela toda
                     text.length > 6 || widthFraction < 0.85f
                 }
 
-                // ── Correção de caracteres ────────────────────────────────
                 val corrected = filtered.map { (rawText, box) ->
                     val fixed = CharacterCorrector.correct(rawText)
                     if (fixed != rawText) Log.d(TAG, "Corrigido: \"$rawText\" → \"$fixed\"")
@@ -145,15 +136,28 @@ object OcrProcessor {
     }
 
     // ─────────────────────────────────────────────
-    // CROP
+    // CROP COM PADDING VERTICAL
     // ─────────────────────────────────────────────
 
+    /**
+     * Expande o rect de corte APENAS em cima e embaixo em [CROP_PAD_TOP_BOTTOM_PX].
+     * As laterais (left/right) permanecem exatamente como o usuário selecionou,
+     * evitando capturar texto de balões adjacentes horizontalmente.
+     */
     private fun applyCrop(bitmap: Bitmap, crop: Rect?): Bitmap {
         if (crop == null) return bitmap
-        val l = crop.left.coerceIn(0, bitmap.width  - 1)
-        val t = crop.top .coerceIn(0, bitmap.height - 1)
-        val w = crop.width() .coerceAtMost(bitmap.width  - l).coerceAtLeast(1)
-        val h = crop.height().coerceAtMost(bitmap.height - t).coerceAtLeast(1)
+
+        val padV = CROP_PAD_TOP_BOTTOM_PX
+
+        val l = crop.left .coerceIn(0, bitmap.width  - 1)          // lateral: sem mudança
+        val r = crop.right.coerceIn(l + 1, bitmap.width)            // lateral: sem mudança
+        val t = (crop.top    - padV).coerceIn(0, bitmap.height - 1) // expande para cima
+        val b = (crop.bottom + padV).coerceIn(t + 1, bitmap.height) // expande para baixo
+
+        val w = (r - l).coerceAtLeast(1)
+        val h = (b - t).coerceAtLeast(1)
+
+        Log.d(TAG, "Crop $crop → +${padV}px vertical: l=$l t=$t w=$w h=$h")
         return Bitmap.createBitmap(bitmap, l, t, w, h)
     }
 

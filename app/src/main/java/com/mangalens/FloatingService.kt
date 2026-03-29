@@ -427,9 +427,10 @@ FloatingService : LifecycleService() {
                 screenWidth   = screenWidth,
                 screenHeight  = screenHeight,
                 cropRect      = cropRect,
-                // ← passa as dimensões reais do bitmap para escala correta
-                bitmapWidth   = if (cropRect != null) cropRect.width()  else lastBitmapWidth.takeIf { it > 0 } ?: screenWidth,
-                bitmapHeight  = if (cropRect != null) cropRect.height() else lastBitmapHeight.takeIf { it > 0 } ?: screenHeight
+                bitmapWidth   = if (cropRect != null) cropRect.width()  else lastBitmapWidth.takeIf  { it > 0 } ?: screenWidth,
+                bitmapHeight  = if (cropRect != null) cropRect.height() else lastBitmapHeight.takeIf { it > 0 } ?: screenHeight,
+                // Modo contínuo exibe resultado limpo — sem menu de copiar/editar
+                readOnly      = forceTranslationMode
             )
         } else {
             GameOverlayManager.gameModeEnabled = true
