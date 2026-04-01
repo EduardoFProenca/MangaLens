@@ -7,7 +7,6 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Necessário para consultar se o Google Lens está instalado -->
     <queries>
         <package android:name="com.google.ar.lens" />
         <package android:name="com.google.android.googlequicksearchbox" />
@@ -36,27 +35,28 @@
             </intent-filter>
         </activity>
 
-        <!-- Tela de Biblioteca (galeria privada) -->
         <activity
             android:name=".LibraryActivity"
             android:exported="false"
             android:label="Biblioteca MangaLens" />
 
-        <!-- Tela de imagens dentro de uma pasta -->
         <activity
             android:name=".LibraryFolderActivity"
             android:exported="false"
             android:label="Pasta" />
+
+        <!-- Editor de imagem -->
+        <activity
+            android:name=".ImageEditorActivity"
+            android:exported="false"
+            android:label="Editor"
+            android:windowSoftInputMode="adjustResize" />
 
         <service
             android:name=".FloatingService"
             android:foregroundServiceType="mediaProjection"
             android:exported="false" />
 
-        <!--
-            FileProvider: expõe a screenshot do cache de forma segura
-            para que o Google Lens (processo externo) possa lê-la.
-        -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
