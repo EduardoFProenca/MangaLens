@@ -1,3 +1,4 @@
+// app/src/main/java/com/mangalens/MainActivity.kt
 package com.mangalens
 
 import android.app.Activity
@@ -42,6 +43,11 @@ class MainActivity : AppCompatActivity() {
                 action = FloatingService.ACTION_STOP
             })
             Toast.makeText(this, "MangaLens parado!", Toast.LENGTH_SHORT).show()
+        }
+
+        // Abre a Biblioteca de capturas
+        findViewById<Button>(R.id.btnLibrary).setOnClickListener {
+            startActivity(Intent(this, LibraryActivity::class.java))
         }
 
         // Baixa modelos EN→PT e JA→PT em background

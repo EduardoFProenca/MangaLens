@@ -36,6 +36,18 @@
             </intent-filter>
         </activity>
 
+        <!-- Tela de Biblioteca (galeria privada) -->
+        <activity
+            android:name=".LibraryActivity"
+            android:exported="false"
+            android:label="Biblioteca MangaLens" />
+
+        <!-- Tela de imagens dentro de uma pasta -->
+        <activity
+            android:name=".LibraryFolderActivity"
+            android:exported="false"
+            android:label="Pasta" />
+
         <service
             android:name=".FloatingService"
             android:foregroundServiceType="mediaProjection"
@@ -44,7 +56,6 @@
         <!--
             FileProvider: expõe a screenshot do cache de forma segura
             para que o Google Lens (processo externo) possa lê-la.
-            Sem isso, a Intent com content:// URI seria bloqueada pelo sistema.
         -->
         <provider
             android:name="androidx.core.content.FileProvider"

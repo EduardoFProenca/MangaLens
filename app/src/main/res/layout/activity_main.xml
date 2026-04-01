@@ -12,14 +12,14 @@
         android:text="🎌 MangaLens"
         android:textSize="32sp"
         android:textStyle="bold"
-        android:layout_marginBottom="16dp"/>
+        android:layout_marginBottom="8dp"/>
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Traduza mangás diretamente da tela"
         android:textSize="16sp"
-        android:layout_marginBottom="48dp"/>
+        android:layout_marginBottom="40dp"/>
 
     <Button
         android:id="@+id/btnStart"
@@ -28,7 +28,7 @@
         android:text="Iniciar MangaLens"
         android:paddingHorizontal="32dp"
         android:paddingVertical="16dp"
-        android:layout_marginBottom="16dp"/>
+        android:layout_marginBottom="12dp"/>
 
     <Button
         android:id="@+id/btnStop"
@@ -37,6 +37,23 @@
         android:text="Parar MangaLens"
         android:backgroundTint="#CC0000"
         android:paddingHorizontal="32dp"
-        android:paddingVertical="16dp"/>
+        android:paddingVertical="16dp"
+        android:layout_marginBottom="24dp"/>
+
+    <!-- Separador visual -->
+    <View
+        android:layout_width="160dp"
+        android:layout_height="1dp"
+        android:background="#33000000"
+        android:layout_marginBottom="24dp"/>
+
+    <Button
+        android:id="@+id/btnLibrary"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="📚 Biblioteca"
+        android:paddingHorizontal="32dp"
+        android:paddingVertical="14dp"
+        android:backgroundTint="#6200EE"/>
 
 </LinearLayout>

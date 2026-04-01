@@ -1,3 +1,4 @@
+// app/src/main/java/com/mangalens/FloatingService.kt
 package com.mangalens
 
 import android.app.*
@@ -24,8 +25,7 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import kotlinx.coroutines.*
 
-class
-FloatingService : LifecycleService() {
+class FloatingService : LifecycleService() {
 
     private lateinit var windowManager: WindowManager
     private lateinit var floatingRoot: View
@@ -41,9 +41,15 @@ FloatingService : LifecycleService() {
     private var screenDensity = 0
 
     // Dimensões reais do último bitmap capturado.
-    // Usadas para converter coordenadas do OCR → coordenadas da tela.
     private var lastBitmapWidth  = 0
     private var lastBitmapHeight = 0
+
+    // Último bitmap capturado — usado para salvar com overlay
+    @Volatile private var lastRawBitmap: Bitmap? = null
+
+    // Últimos resultados de OCR — usados para mesclar overlay ao salvar
+    @Volatile private var lastResults: List<TextResult> = emptyList()
+    @Volatile private var lastCropRect: Rect? = null
 
     enum class CaptureMode { SINGLE, AREA, CONTINUOUS, GOOGLE_LENS }
     private var captureMode = CaptureMode.SINGLE
@@ -106,6 +112,7 @@ FloatingService : LifecycleService() {
         continuousCapture.stop()
         AreaSelectorOverlay.dismiss(windowManager)
         TranslationOverlay.dismiss(windowManager)
+        SaveOverlay.dismiss(windowManager)
         tearDownProjection()
         if (::floatingRoot.isInitialized) runCatching { windowManager.removeView(floatingRoot) }
     }
@@ -194,6 +201,10 @@ FloatingService : LifecycleService() {
             if (areaLocked) "🔓  Destravar área" else "🔒  Travar área atual"
         } else null
 
+        // Opção de salvar só disponível se houver uma captura recente
+        val saveLabel = if (lastRawBitmap != null && lastResults.isNotEmpty())
+            "💾  Salvar captura atual na Biblioteca" else null
+
         val options = listOfNotNull(
             label(CaptureMode.SINGLE,      "📷  Tela Cheia"),
             label(CaptureMode.AREA,        "▲   Seleção de Área"),
@@ -201,8 +212,21 @@ FloatingService : LifecycleService() {
             label(CaptureMode.GOOGLE_LENS, "🔍  Google Lens"),
             "─────────────────",
             gameLabel,
-            lockLabel
+            lockLabel,
+            saveLabel
         ).toTypedArray()
+
+        // Mapeia índice → ação (ajustando para os itens opcionais)
+        val actionMap = buildList {
+            add { switchCaptureTo(CaptureMode.SINGLE) }
+            add { switchCaptureTo(CaptureMode.AREA) }
+            add { switchCaptureTo(CaptureMode.CONTINUOUS) }
+            add { switchCaptureTo(CaptureMode.GOOGLE_LENS) }
+            add { /* separador */ }
+            add { toggleGameMode() }
+            if (lockLabel != null) add { toggleLock() }
+            if (saveLabel != null) add { triggerSave() }
+        }
 
         handler.post {
             val dlg = android.app.AlertDialog.Builder(
@@ -210,19 +234,45 @@ FloatingService : LifecycleService() {
             )
                 .setTitle("MangaLens — Modo de captura")
                 .setItems(options) { _, which ->
-                    when (which) {
-                        0 -> switchCaptureTo(CaptureMode.SINGLE)
-                        1 -> switchCaptureTo(CaptureMode.AREA)
-                        2 -> switchCaptureTo(CaptureMode.CONTINUOUS)
-                        3 -> switchCaptureTo(CaptureMode.GOOGLE_LENS)
-                        4 -> { /* separador */ }
-                        5 -> toggleGameMode()
-                        6 -> if (lockLabel != null) toggleLock()
-                    }
+                    actionMap.getOrNull(which)?.invoke()
                 }.create()
             dlg.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
             dlg.show()
         }
+    }
+
+    // ─────────────────────────────────────────────
+    // SALVAR CAPTURA
+    // ─────────────────────────────────────────────
+
+    /**
+     * Abre o SaveOverlay para o usuário escolher a pasta.
+     * Mescla o bitmap bruto com as bolhas de tradução antes de exibir.
+     */
+    private fun triggerSave() {
+        val raw     = lastRawBitmap ?: return
+        val results = lastResults
+        if (results.isEmpty()) {
+            Toast.makeText(this, "Nenhuma tradução para salvar", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Renderiza o overlay de tradução sobre o bitmap bruto (off-screen)
+        val merged = GalleryManager.renderTranslationOverBitmap(
+            background   = raw,
+            results      = results,
+            screenWidth  = screenWidth,
+            screenHeight = screenHeight,
+            cropRect     = lastCropRect,
+            bitmapWidth  = lastBitmapWidth.takeIf { it > 0 } ?: screenWidth,
+            bitmapHeight = lastBitmapHeight.takeIf { it > 0 } ?: screenHeight
+        )
+
+        SaveOverlay.show(
+            context       = this,
+            windowManager = windowManager,
+            bitmap        = merged
+        )
     }
 
     // ─────────────────────────────────────────────
@@ -347,9 +397,10 @@ FloatingService : LifecycleService() {
                 }
                 continuousOcrInProgress = true
 
-                // Registra dimensões do bitmap para escala correta
                 lastBitmapWidth  = bitmap.width
                 lastBitmapHeight = bitmap.height
+                lastRawBitmap    = bitmap
+                lastCropRect     = crop
 
                 withContext(Dispatchers.Main) {
                     OcrProcessor.process(this@FloatingService, bitmap, crop) { results ->
@@ -361,6 +412,7 @@ FloatingService : LifecycleService() {
                         if (!continuousCapture.isNewText(combinedText)) {
                             TranslationOverlay.restore(); GameOverlayManager.restoreForCapture(); return@process
                         }
+                        lastResults = results
                         showResults(results, crop, isFullScreen = false, forceTranslationMode = true)
                     }
                 }
@@ -390,9 +442,10 @@ FloatingService : LifecycleService() {
                 return@launch
             }
 
-            // Registra dimensões reais do bitmap
             lastBitmapWidth  = bitmap.width
             lastBitmapHeight = bitmap.height
+            lastRawBitmap    = bitmap
+            lastCropRect     = cropRect
 
             saveDebugBitmap(bitmap)
 
@@ -401,6 +454,7 @@ FloatingService : LifecycleService() {
                     if (results.isEmpty()) {
                         Toast.makeText(this@FloatingService, "🔍 Nenhum texto encontrado", Toast.LENGTH_SHORT).show()
                     } else {
+                        lastResults = results
                         showResults(results, cropRect, isFullScreen)
                     }
                 }
@@ -429,7 +483,6 @@ FloatingService : LifecycleService() {
                 cropRect      = cropRect,
                 bitmapWidth   = if (cropRect != null) cropRect.width()  else lastBitmapWidth.takeIf  { it > 0 } ?: screenWidth,
                 bitmapHeight  = if (cropRect != null) cropRect.height() else lastBitmapHeight.takeIf { it > 0 } ?: screenHeight,
-                // Modo contínuo exibe resultado limpo — sem menu de copiar/editar
                 readOnly      = forceTranslationMode
             )
         } else {
