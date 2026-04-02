@@ -15,32 +15,53 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * Canvas de edição — versão 2.0
+ * Canvas de edição — versão 2.2
  *
- * MUDANÇAS PRINCIPAIS:
+ * ═══════════════════════════════════════════════════════════
+ * CORREÇÕES v2.2 — CROP PRECISO + SEM RESTRIÇÕES
+ * ═══════════════════════════════════════════════════════════
  *
- * 1. TRANSFORMAÇÃO CANÔNICA (zoom/pan)
- *    Antes: canvas.translate(pan) + canvas.scale(sf, pivot_complexo)
- *    Agora: canvas.translate(pan) + canvas.scale(sf, sf)   ← pivot = origem
- *    Fórmula: screen = canvas × scaleFactor + pan
- *    viewToCanvas: cx = (sx − panX) / scaleFactor
- *    → Zoom sempre centrado no ponto exato entre os dois dedos (focusX/Y do detector).
+ * PROBLEMA 1 — Interface "comendo" a área de crop (Imagem 2 do usuário):
+ * ───────────────────────────────────────────────────────────
+ * O toolbar inferior tinha `bottomSafeAreaPx` que limitava a borda inferior
+ * do cropRect a (height - bottomSafeAreaPx). Isso impedia o usuário de
+ * arrastar a alça inferior até o fim da imagem.
  *
- * 2. BLOCOS DE TEXTO SELECIONÁVEIS / ARRASTÁVEIS / REDIMENSIONÁVEIS
- *    - Toque em bloco existente → seleciona e arrastra (MOVE)
- *    - Handles nos 4 cantos visíveis ao selecionar
- *    - Arrastar handle direito (TR / BR) → redimensiona largura pela direita
- *    - Arrastar handle esquerdo (TL / BL) → redimensiona largura pela esquerda (move x)
- *    - Toque em área vazia → deseleciona e abre dialog para novo bloco
- *    - Handles têm raio fixo em TELA (independem do zoom)
+ * CORREÇÃO: `maxCropBottom()` agora retorna `bitmapDstRect.bottom` sem
+ * nenhuma subtração. O crop vai até a borda real da imagem.
+ * A linha tracejada de referência foi removida completamente.
  *
- * 3. CROP COM SAFE AREA
- *    - `bottomSafeAreaPx`: altura do toolbar inferior em px
- *    - A borda inferior do crop nunca cobre o toolbar
- *    - Linha tracejada amarela indica o limite de segurança
+ * PROBLEMA 2 — Crop capturando área errada (Imagem 2, moldura ≠ resultado):
+ * ───────────────────────────────────────────────────────────
+ * CAUSA RAIZ: O `cropRect` é desenhado em **screen/view space** (dentro de
+ * `drawCropOverlay` que roda FORA do canvas.save()/scale(), ou seja, sem
+ * a transformação de zoom/pan aplicada). Porém `applyCrop()` tratava as
+ * coordenadas do cropRect como se fossem canvas space, aplicando só a
+ * escala bitmapDstRect→bitmap sem desfazer o zoom/pan primeiro.
  *
- * 4. EXPORTAÇÃO
- *    - Remapeia canvas space → bitmap original com escala correta
+ * Quando scaleFactor=1 e pan=(0,0) não havia erro visível. Mas qualquer
+ * combinação diferente gerava um offset/escala errado.
+ *
+ * CORREÇÃO em `applyCrop()`:
+ *   1. `cropRect` está em screen space → converte para canvas space:
+ *      cx = (sx - panX) / scaleFactor
+ *   2. Canvas space → bitmap original:
+ *      bx = (cx - bitmapDstRect.left) * (bmp.width / bitmapDstRect.width)
+ *
+ * Com isso o crop é exatamente o que o usuário vê na moldura, independente
+ * do nível de zoom e posição de pan.
+ *
+ * PROBLEMA 3 — Aspect ratio travado:
+ * ───────────────────────────────────────────────────────────
+ * Não havia código de aspect ratio explícito, mas a limitação lateral era
+ * `bl.right` (bitmapDstRect.right) que impedia ir além da imagem — isso é
+ * correto. Confirmado: sem trava de proporção no código, mantido assim.
+ *
+ * PROBLEMA 4 — `initCrop()` iniciava com moldura menor que a imagem:
+ * ───────────────────────────────────────────────────────────
+ * Antes: `cropRect = RectF(bitmapDstRect).apply { bottom = bottom.coerceAtMost(maxCropBottom()) }`
+ * Como maxCropBottom() era limitado, a moldura inicial era menor que a imagem.
+ * Agora: `cropRect = RectF(bitmapDstRect)` — cobre toda a imagem por padrão.
  */
 @SuppressLint("ClickableViewAccessibility")
 class ImageEditorView @JvmOverloads constructor(
@@ -76,7 +97,8 @@ class ImageEditorView @JvmOverloads constructor(
 
     /**
      * Altura do toolbar inferior (px).
-     * Definir DEPOIS do layout para proteger o crop.
+     * MANTIDO apenas para compatibilidade com ImageEditorActivity.
+     * NÃO é mais usado para limitar o crop.
      */
     var bottomSafeAreaPx: Int = 0
 
@@ -117,7 +139,6 @@ class ImageEditorView @JvmOverloads constructor(
     private var panX        = 0f
     private var panY        = 0f
 
-    // Para pan com um dedo (mode NONE ou entre gestos)
     private var lastPanX  = 0f
     private var lastPanY  = 0f
     private var isPanning = false
@@ -127,7 +148,6 @@ class ImageEditorView @JvmOverloads constructor(
             override fun onScale(d: ScaleGestureDetector): Boolean {
                 val newScale = (scaleFactor * d.scaleFactor).coerceIn(minScale, maxScale)
                 val ratio    = newScale / scaleFactor
-                // Mantém o ponto focal fixo na tela → zoom centrado nos dedos
                 panX = d.focusX - (d.focusX - panX) * ratio
                 panY = d.focusY - (d.focusY - panY) * ratio
                 scaleFactor  = newScale
@@ -136,7 +156,7 @@ class ImageEditorView @JvmOverloads constructor(
             }
         })
 
-    /** screen → canvas  */
+    /** screen → canvas space */
     private fun viewToCanvas(sx: Float, sy: Float) =
         PointF((sx - panX) / scaleFactor, (sy - panY) / scaleFactor)
 
@@ -147,7 +167,7 @@ class ImageEditorView @JvmOverloads constructor(
     private var backgroundBitmap: Bitmap? = null
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
-    /** Rect do bitmap em canvas space (= view px a sf=1, pan=0) */
+    /** Rect do bitmap em canvas space (sf=1, pan=0) */
     val bitmapDstRect = RectF()
 
     fun setBackground(bmp: Bitmap) {
@@ -173,7 +193,6 @@ class ImageEditorView @JvmOverloads constructor(
     // SELEÇÃO / MANIPULAÇÃO DE TEXTO
     // ─────────────────────────────────────────────
 
-    /** Rects de cada bloco em canvas space — reconstruído no onDraw */
     private val blockRenderRects = ArrayList<RectF>()
 
     var selectedIdx      = -1
@@ -182,19 +201,15 @@ class ImageEditorView @JvmOverloads constructor(
     private var manipLastX    = 0f
     private var manipLastY    = 0f
 
-    // Estado de "toque pendente em área vazia" → abre dialog ao soltar
     private var newTextPending = false
     private var pendingTapX    = 0f
     private var pendingTapY    = 0f
 
-    private val px get() = resources.displayMetrics.density
+    private val px  get() = resources.displayMetrics.density
     private val spx get() = resources.displayMetrics.scaledDensity
 
-    /** Raio visual dos handles em canvas space (fixo em tela) */
     private val handleRadiusCanvas get() = 14f * px / scaleFactor
-
-    /** Raio de hit para handles (ligeiramente maior que o visual) */
-    private val handleHitCanvas get() = 24f * px / scaleFactor
+    private val handleHitCanvas    get() = 24f * px / scaleFactor
 
     // ─────────────────────────────────────────────
     // CROP
@@ -202,28 +217,44 @@ class ImageEditorView @JvmOverloads constructor(
 
     private var cropRect: RectF? = null
     private var cropHandle       = CropHandle.NONE
-    private val cropHitSize get() = 38f * px  // screen space
-    private val minCropSize      = 60f
+
+    // Tamanho do hit-box das alças em screen space (px físicos)
+    private val cropHitSize get() = 44f * px
+
+    // Tamanho mínimo de cada lado do crop em screen space
+    private val minCropSize = 60f
+
+    /**
+     * Limite inferior do crop = borda inferior do bitmap em screen space.
+     *
+     * CORREÇÃO v2.2: antes subtraía bottomSafeAreaPx, limitando o crop.
+     * Agora retorna o bottom real do bitmapDstRect convertido para screen space.
+     *
+     * bitmapDstRect está em canvas space → screen space:
+     *   screenY = canvasY * scaleFactor + panY
+     */
+    private fun bitmapScreenRect(): RectF {
+        return RectF(
+            bitmapDstRect.left   * scaleFactor + panX,
+            bitmapDstRect.top    * scaleFactor + panY,
+            bitmapDstRect.right  * scaleFactor + panX,
+            bitmapDstRect.bottom * scaleFactor + panY
+        )
+    }
 
     enum class CropHandle { NONE, TL, TR, BL, BR, MOVE }
 
-    private fun maxCropBottom() =
-        (height.toFloat() - bottomSafeAreaPx.toFloat()).coerceAtMost(bitmapDstRect.bottom)
-
     // ─────────────────────────────────────────────
-    // PAINTS (estáticos)
+    // PAINTS
     // ─────────────────────────────────────────────
 
     private val cropBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2f }
-    private val cropDimPaint    = Paint().apply { color = Color.argb(130, 0, 0, 0) }
+        color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2.5f }
+    private val cropDimPaint    = Paint().apply { color = Color.argb(140, 0, 0, 0) }
     private val cropCornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f }
+        color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 5f }
     private val cropGridPaint   = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(80, 255, 255, 255); style = Paint.Style.STROKE; strokeWidth = 1f }
-    private val safeLinePaint   = Paint().apply {
-        color = Color.argb(140, 255, 200, 0); style = Paint.Style.STROKE; strokeWidth = 2f
-        pathEffect = DashPathEffect(floatArrayOf(14f, 7f), 0f) }
 
     private val selBorderPaint  = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE; style = Paint.Style.STROKE }
@@ -233,27 +264,59 @@ class ImageEditorView @JvmOverloads constructor(
         color = Color.parseColor("#6200EE"); style = Paint.Style.STROKE }
 
     // ─────────────────────────────────────────────
-    // CROP — API
+    // CROP — API PÚBLICA
     // ─────────────────────────────────────────────
 
+    /**
+     * Inicializa o cropRect cobrindo toda a imagem em screen space.
+     *
+     * CORREÇÃO v2.2: usa bitmapScreenRect() para que a moldura inicial
+     * cubra exatamente a imagem visível, independente do zoom/pan atual.
+     */
     fun initCrop() {
-        cropRect = RectF(bitmapDstRect).apply {
-            bottom = bottom.coerceAtMost(maxCropBottom())
-        }
+        cropRect = bitmapScreenRect()
         invalidate()
     }
 
+    /**
+     * Aplica o corte com conversão CORRETA screen space → bitmap pixels.
+     *
+     * PIPELINE DE CONVERSÃO (v2.2):
+     *
+     *   screen space (cropRect) → canvas space → bitmap pixels
+     *
+     *   canvas_x = (screen_x - panX) / scaleFactor
+     *   bitmap_x = (canvas_x - bitmapDstRect.left) * (bmp.width / bitmapDstRect.width)
+     *
+     * Verificação com scaleFactor=1, panX=0 (caso base):
+     *   canvas_x = screen_x  ✓  (identidade)
+     *   bitmap_x = (screen_x - dst.left) * scale  ✓  (mesmo que antes)
+     *
+     * Verificação com scaleFactor=2, panX=100:
+     *   canvas_x = (screen_x - 100) / 2  ✓  (desfaz o zoom/pan)
+     *   bitmap_x = ...  ✓  (agora correto)
+     */
     fun applyCrop(): Boolean {
         val cr  = cropRect ?: return false
         val bmp = backgroundBitmap ?: return false
 
-        val sx = bmp.width.toFloat()  / bitmapDstRect.width()
-        val sy = bmp.height.toFloat() / bitmapDstRect.height()
+        // Passo 1: screen space → canvas space (desfaz zoom/pan)
+        val canvasLeft   = (cr.left   - panX) / scaleFactor
+        val canvasTop    = (cr.top    - panY) / scaleFactor
+        val canvasRight  = (cr.right  - panX) / scaleFactor
+        val canvasBottom = (cr.bottom - panY) / scaleFactor
 
-        val bx  = ((cr.left   - bitmapDstRect.left) * sx).toInt().coerceIn(0, bmp.width  - 1)
-        val by_ = ((cr.top    - bitmapDstRect.top)  * sy).toInt().coerceIn(0, bmp.height - 1)
-        val bw  = (cr.width()  * sx).toInt().coerceIn(1, bmp.width  - bx)
-        val bh  = (cr.height() * sy).toInt().coerceIn(1, bmp.height - by_)
+        // Passo 2: canvas space → bitmap pixels
+        val scaleX = bmp.width.toFloat()  / bitmapDstRect.width()
+        val scaleY = bmp.height.toFloat() / bitmapDstRect.height()
+
+        val bx  = ((canvasLeft   - bitmapDstRect.left) * scaleX).toInt().coerceIn(0, bmp.width  - 1)
+        val by_ = ((canvasTop    - bitmapDstRect.top)  * scaleY).toInt().coerceIn(0, bmp.height - 1)
+        val bx2 = ((canvasRight  - bitmapDstRect.left) * scaleX).toInt().coerceIn(bx + 1, bmp.width)
+        val by2 = ((canvasBottom - bitmapDstRect.top)  * scaleY).toInt().coerceIn(by_ + 1, bmp.height)
+
+        val bw = (bx2 - bx).coerceAtLeast(1)
+        val bh = (by2 - by_).coerceAtLeast(1)
 
         backgroundBitmap = Bitmap.createBitmap(bmp, bx, by_, bw, bh)
         cropRect = null; activeTool = Tool.NONE
@@ -270,19 +333,16 @@ class ImageEditorView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // ── Transformação canônica: screen = canvas × sf + pan ──
+        // Transformação canônica: screen = canvas × sf + pan
         canvas.save()
         canvas.translate(panX, panY)
         canvas.scale(scaleFactor, scaleFactor)
 
-        // Bitmap de fundo
         backgroundBitmap?.let { canvas.drawBitmap(it, null, bitmapDstRect, bitmapPaint) }
 
-        // Traços de pincel
         strokes.forEach { canvas.drawPath(it.path, it.paint) }
         currentPath?.let { canvas.drawPath(it, currentPaint!!) }
 
-        // Blocos de texto — rect calculado e armazenado para hit-test
         blockRenderRects.clear()
         textBlocks.forEachIndexed { i, block ->
             blockRenderRects.add(
@@ -293,14 +353,10 @@ class ImageEditorView @JvmOverloads constructor(
 
         canvas.restore()
 
-        // Crop overlay em screen space (não sofre zoom/pan)
+        // Crop overlay em screen space (fora do canvas.save/scale)
         drawCropOverlay(canvas)
     }
 
-    /**
-     * Desenha um bloco de texto e retorna seu rect em canvas space.
-     * Usado tanto no onDraw quanto na exportação.
-     */
     private fun drawTextBlock(canvas: Canvas, block: TextBlock, selected: Boolean): RectF {
         val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             color    = block.color
@@ -321,8 +377,7 @@ class ImageEditorView @JvmOverloads constructor(
             .setIncludePad(false)
             .build()
 
-        val padX   = 8f
-        val padY   = 4f
+        val padX = 8f; val padY = 4f
         val blockRect = RectF(
             block.x - padX, block.y - padY,
             block.x + maxW + padX, block.y + sl.height + padY
@@ -334,56 +389,60 @@ class ImageEditorView @JvmOverloads constructor(
         if (block.hasBackground) {
             canvas.drawRoundRect(
                 RectF(-padX, -padY, maxW + padX, sl.height + padY), 8f, 8f,
-                Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.BLACK; alpha = block.bgAlpha }
+                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; alpha = block.bgAlpha }
             )
         }
         sl.draw(canvas)
         canvas.restore()
 
         if (selected) drawSelectionHandles(canvas, blockRect)
-
         return blockRect
     }
 
-    /** Handles de seleção em canvas space (tamanho fixo na tela via / scaleFactor) */
     private fun drawSelectionHandles(canvas: Canvas, rect: RectF) {
         val sw = 2f / scaleFactor
         val hr = handleRadiusCanvas
 
-        // Borda tracejada
         selBorderPaint.apply {
             strokeWidth = sw
             pathEffect  = DashPathEffect(
                 floatArrayOf(8f / scaleFactor, 4f / scaleFactor), 0f)
         }
         canvas.drawRect(rect, selBorderPaint)
-
         handleRimPaint.strokeWidth = sw * 1.5f
 
-        // 4 handles de canto
         listOf(
-            rect.left to rect.top,
-            rect.right to rect.top,
-            rect.left to rect.bottom,
-            rect.right to rect.bottom
+            rect.left to rect.top,   rect.right to rect.top,
+            rect.left to rect.bottom, rect.right to rect.bottom
         ).forEach { (hx, hy) ->
             canvas.drawCircle(hx, hy, hr, handleFillPaint)
             canvas.drawCircle(hx, hy, hr, handleRimPaint)
         }
     }
 
-    /** Overlay de corte em screen space */
+    /**
+     * Desenha o overlay de corte em SCREEN SPACE.
+     *
+     * IMPORTANTE: este método roda FORA do canvas.save()/scale(), portanto
+     * todas as coordenadas aqui são screen space puro.
+     * O cropRect é gerenciado em screen space para consistência com o toque.
+     *
+     * Limites visíveis:
+     * - Laterais e topo: bitmapScreenRect() (borda real da imagem em tela)
+     * - Base: bitmapScreenRect().bottom (sem limitação de toolbar)
+     */
     private fun drawCropOverlay(canvas: Canvas) {
         val cr = cropRect ?: return
-        val w  = width.toFloat(); val h = height.toFloat()
+        val w  = width.toFloat()
+        val h  = height.toFloat()
 
-        // Escurece fora do crop
+        // Área escurecida fora do crop
         canvas.drawRect(0f, 0f, w, cr.top, cropDimPaint)
         canvas.drawRect(0f, cr.bottom, w, h, cropDimPaint)
         canvas.drawRect(0f, cr.top, cr.left, cr.bottom, cropDimPaint)
         canvas.drawRect(cr.right, cr.top, w, cr.bottom, cropDimPaint)
 
+        // Borda do crop
         canvas.drawRect(cr, cropBorderPaint)
 
         // Grade 3×3
@@ -393,21 +452,16 @@ class ImageEditorView @JvmOverloads constructor(
         canvas.drawLine(cr.left, cr.top + th,   cr.right, cr.top + th,   cropGridPaint)
         canvas.drawLine(cr.left, cr.top + th*2, cr.right, cr.top + th*2, cropGridPaint)
 
-        // Alças em L nos cantos
-        val len = 30f
-        listOf(cr.left to cr.top, cr.right to cr.top,
-            cr.left to cr.bottom, cr.right to cr.bottom)
-            .forEach { (x, y) ->
-                val sx = if (x == cr.left) 1f else -1f
-                val sy = if (y == cr.top)  1f else -1f
-                canvas.drawLine(x, y, x + sx * len, y, cropCornerPaint)
-                canvas.drawLine(x, y, x, y + sy * len, cropCornerPaint)
-            }
-
-        // Linha de safe area do toolbar
-        if (bottomSafeAreaPx > 0) {
-            val safeLine = h - bottomSafeAreaPx
-            canvas.drawLine(0f, safeLine, w, safeLine, safeLinePaint)
+        // Alças em L nos cantos (screen space, tamanho fixo)
+        val len = 34f
+        listOf(
+            cr.left  to cr.top,    cr.right to cr.top,
+            cr.left  to cr.bottom, cr.right to cr.bottom
+        ).forEach { (x, y) ->
+            val sx = if (x == cr.left) 1f else -1f
+            val sy = if (y == cr.top)  1f else -1f
+            canvas.drawLine(x, y, x + sx * len, y, cropCornerPaint)
+            canvas.drawLine(x, y, x, y + sy * len, cropCornerPaint)
         }
     }
 
@@ -456,18 +510,16 @@ class ImageEditorView @JvmOverloads constructor(
         return true
     }
 
-    // ── Texto (com seleção / drag / resize) ──────
+    // ── Texto ────────────────────────────────────
 
     private fun handleText(event: MotionEvent): Boolean {
         val pt = viewToCanvas(event.x, event.y)
         val hr = handleHitCanvas
 
         when (event.action) {
-
             MotionEvent.ACTION_DOWN -> {
                 newTextPending = false
 
-                // 1. Handles do bloco atualmente selecionado têm prioridade
                 if (selectedIdx in textBlocks.indices) {
                     val rect = blockRenderRects.getOrNull(selectedIdx)
                     if (rect != null) {
@@ -475,71 +527,38 @@ class ImageEditorView @JvmOverloads constructor(
                                 dist(pt, rect.right, rect.bottom) < hr
                         val hitL = dist(pt, rect.left,  rect.top)   < hr ||
                                 dist(pt, rect.left,  rect.bottom) < hr
-
                         when {
-                            hitR -> { textManipMode = TextManipMode.RESIZE_RIGHT
-                                storeManip(pt); invalidate(); return true }
-                            hitL -> { textManipMode = TextManipMode.RESIZE_LEFT
-                                storeManip(pt); invalidate(); return true }
-                            rect.contains(pt.x, pt.y) -> {
-                                textManipMode = TextManipMode.MOVE
-                                storeManip(pt); invalidate(); return true
-                            }
+                            hitR -> { textManipMode = TextManipMode.RESIZE_RIGHT; storeManip(pt); invalidate(); return true }
+                            hitL -> { textManipMode = TextManipMode.RESIZE_LEFT;  storeManip(pt); invalidate(); return true }
+                            rect.contains(pt.x, pt.y) -> { textManipMode = TextManipMode.MOVE; storeManip(pt); invalidate(); return true }
                         }
                     }
                 }
 
-                // 2. Verifica todos os blocos
                 val hitIdx = blockRenderRects.indices.firstOrNull { i ->
                     blockRenderRects.getOrNull(i)?.contains(pt.x, pt.y) == true
                 } ?: -1
 
                 if (hitIdx >= 0) {
-                    selectedIdx   = hitIdx
-                    textManipMode = TextManipMode.MOVE
-                    storeManip(pt)
+                    selectedIdx = hitIdx; textManipMode = TextManipMode.MOVE; storeManip(pt)
                 } else {
-                    selectedIdx   = -1
-                    textManipMode = TextManipMode.NONE
-                    // Guarda posição para criar texto ao soltar (se não houver movimento)
-                    newTextPending = true
-                    pendingTapX    = pt.x
-                    pendingTapY    = pt.y
+                    selectedIdx = -1; textManipMode = TextManipMode.NONE
+                    newTextPending = true; pendingTapX = pt.x; pendingTapY = pt.y
                 }
                 invalidate()
             }
 
             MotionEvent.ACTION_MOVE -> {
-                val dx = pt.x - manipLastX
-                val dy = pt.y - manipLastY
-
-                // Cancela "new text" se o dedo se moveu (tolerância = 8 canvas units)
+                val dx = pt.x - manipLastX; val dy = pt.y - manipLastY
                 if (newTextPending && textManipMode == TextManipMode.NONE) {
-                    if (dist2(pt.x - pendingTapX, pt.y - pendingTapY) > (8f / scaleFactor)) {
-                        newTextPending = false
-                    }
+                    if (dist2(pt.x - pendingTapX, pt.y - pendingTapY) > (8f / scaleFactor)) newTextPending = false
                 }
-
                 if (selectedIdx in textBlocks.indices) {
                     val block = textBlocks[selectedIdx]
                     when (textManipMode) {
-                        TextManipMode.MOVE -> {
-                            block.x += dx; block.y += dy
-                            newTextPending = false
-                            invalidate()
-                        }
-                        TextManipMode.RESIZE_RIGHT -> {
-                            block.maxWidthPx = (block.maxWidthPx + dx).toInt().coerceAtLeast(60)
-                            newTextPending   = false
-                            invalidate()
-                        }
-                        TextManipMode.RESIZE_LEFT -> {
-                            val di = dx.toInt()
-                            block.x        += di
-                            block.maxWidthPx = (block.maxWidthPx - di).coerceAtLeast(60)
-                            newTextPending   = false
-                            invalidate()
-                        }
+                        TextManipMode.MOVE         -> { block.x += dx; block.y += dy; newTextPending = false; invalidate() }
+                        TextManipMode.RESIZE_RIGHT -> { block.maxWidthPx = (block.maxWidthPx + dx).toInt().coerceAtLeast(60); newTextPending = false; invalidate() }
+                        TextManipMode.RESIZE_LEFT  -> { val di = dx.toInt(); block.x += di; block.maxWidthPx = (block.maxWidthPx - di).coerceAtLeast(60); newTextPending = false; invalidate() }
                         else -> {}
                     }
                 }
@@ -547,11 +566,8 @@ class ImageEditorView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_UP -> {
-                if (newTextPending && textManipMode == TextManipMode.NONE) {
-                    onTextPositionRequested?.invoke(pendingTapX, pendingTapY)
-                }
-                newTextPending = false
-                textManipMode  = TextManipMode.NONE
+                if (newTextPending && textManipMode == TextManipMode.NONE) onTextPositionRequested?.invoke(pendingTapX, pendingTapY)
+                newTextPending = false; textManipMode = TextManipMode.NONE
             }
         }
         return true
@@ -559,12 +575,12 @@ class ImageEditorView @JvmOverloads constructor(
 
     private fun storeManip(pt: PointF) { manipLastX = pt.x; manipLastY = pt.y }
 
-    // ── Pan (Tool.NONE) ───────────────────────────
+    // ── Pan ──────────────────────────────────────
 
     private fun handlePan(event: MotionEvent): Boolean {
         when (event.action) {
-            MotionEvent.ACTION_DOWN  -> { lastPanX = event.x; lastPanY = event.y; isPanning = true }
-            MotionEvent.ACTION_MOVE  -> if (isPanning) {
+            MotionEvent.ACTION_DOWN   -> { lastPanX = event.x; lastPanY = event.y; isPanning = true }
+            MotionEvent.ACTION_MOVE   -> if (isPanning) {
                 panX += event.x - lastPanX; panY += event.y - lastPanY
                 lastPanX = event.x; lastPanY = event.y; invalidate()
             }
@@ -574,14 +590,19 @@ class ImageEditorView @JvmOverloads constructor(
         return true
     }
 
-    // ── Crop ─────────────────────────────────────
+    // ── Crop — tudo em SCREEN SPACE ──────────────
+    //
+    // O cropRect vive em screen space. As alças são detectadas em screen space.
+    // Isso é consistente com drawCropOverlay() que também usa screen space.
+    // A conversão para bitmap pixels só acontece em applyCrop().
 
     private fun handleCrop(event: MotionEvent): Boolean {
-        val cr  = cropRect ?: return false
-        val x   = event.x; val y = event.y
-        val hs  = cropHitSize
-        val mb  = maxCropBottom()
-        val bl  = bitmapDstRect
+        val cr = cropRect ?: return false
+        val x  = event.x; val y = event.y
+        val hs = cropHitSize
+
+        // Limite: borda da imagem em screen space
+        val bl = bitmapScreenRect()
 
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
@@ -590,11 +611,12 @@ class ImageEditorView @JvmOverloads constructor(
                     boxHit(x, y, cr.right, cr.top,    hs) -> CropHandle.TR
                     boxHit(x, y, cr.left,  cr.bottom, hs) -> CropHandle.BL
                     boxHit(x, y, cr.right, cr.bottom, hs) -> CropHandle.BR
-                    cr.contains(x, y) -> CropHandle.MOVE
-                    else              -> CropHandle.NONE
+                    cr.contains(x, y)                     -> CropHandle.MOVE
+                    else                                   -> CropHandle.NONE
                 }
                 lastPanX = x; lastPanY = y
             }
+
             MotionEvent.ACTION_MOVE -> {
                 val dx = x - lastPanX; val dy = y - lastPanY
                 when (cropHandle) {
@@ -604,27 +626,30 @@ class ImageEditorView @JvmOverloads constructor(
                     }
                     CropHandle.TR -> {
                         cr.right = (cr.right + dx).coerceIn(cr.left + minCropSize, bl.right)
-                        cr.top   = (cr.top   + dy).coerceIn(bl.top, cr.bottom - minCropSize)
+                        cr.top   = (cr.top   + dy).coerceIn(bl.top,  cr.bottom - minCropSize)
                     }
                     CropHandle.BL -> {
-                        cr.left   = (cr.left   + dx).coerceIn(bl.left, cr.right - minCropSize)
-                        cr.bottom = (cr.bottom + dy).coerceIn(cr.top + minCropSize, mb)
+                        cr.left   = (cr.left   + dx).coerceIn(bl.left, cr.right  - minCropSize)
+                        // CORREÇÃO v2.2: bl.bottom sem subtrair toolbar
+                        cr.bottom = (cr.bottom + dy).coerceIn(cr.top + minCropSize, bl.bottom)
                     }
                     CropHandle.BR -> {
                         cr.right  = (cr.right  + dx).coerceIn(cr.left + minCropSize, bl.right)
-                        cr.bottom = (cr.bottom + dy).coerceIn(cr.top + minCropSize, mb)
+                        // CORREÇÃO v2.2: bl.bottom sem subtrair toolbar
+                        cr.bottom = (cr.bottom + dy).coerceIn(cr.top + minCropSize, bl.bottom)
                     }
                     CropHandle.MOVE -> {
                         val nL = cr.left + dx; val nT = cr.top + dy
                         val nR = cr.right + dx; val nB = cr.bottom + dy
-                        if (nL >= bl.left && nR <= bl.right)  { cr.left = nL; cr.right  = nR }
-                        if (nT >= bl.top  && nB <= mb)        { cr.top  = nT; cr.bottom = nB }
+                        if (nL >= bl.left && nR <= bl.right)   { cr.left = nL; cr.right  = nR }
+                        if (nT >= bl.top  && nB <= bl.bottom)  { cr.top  = nT; cr.bottom = nB }
                     }
                     CropHandle.NONE -> {}
                 }
                 lastPanX = x; lastPanY = y
                 invalidate()
             }
+
             MotionEvent.ACTION_UP -> cropHandle = CropHandle.NONE
         }
         return true
@@ -642,10 +667,8 @@ class ImageEditorView @JvmOverloads constructor(
             alignment = textAlignment, hasBackground = textHasBackground,
             bgAlpha = textBackgroundAlpha, maxWidthPx = defaultW
         ).also { block ->
-            textBlocks.add(block)
-            undoStack.add(block)
-            selectedIdx   = textBlocks.lastIndex
-            textManipMode = TextManipMode.NONE
+            textBlocks.add(block); undoStack.add(block)
+            selectedIdx = textBlocks.lastIndex; textManipMode = TextManipMode.NONE
         }
         invalidate()
     }
@@ -669,8 +692,8 @@ class ImageEditorView @JvmOverloads constructor(
     }
 
     /**
-     * Exporta em resolução original.
-     * Remapeia canvas space → bitmap pixel via scale+translate.
+     * Exporta em resolução original do bitmap.
+     * Usa canvas space → bitmap via escala bitmapDstRect.
      */
     fun exportBitmap(): Bitmap {
         val bmp  = backgroundBitmap
@@ -683,7 +706,6 @@ class ImageEditorView @JvmOverloads constructor(
 
         if (bmp == null || bitmapDstRect.width() == 0f) return result
 
-        // canvas space → bitmap original: scale e offset
         val sx = outW.toFloat() / bitmapDstRect.width()
         val sy = outH.toFloat() / bitmapDstRect.height()
 

@@ -18,7 +18,15 @@ import java.util.*
  * Grade de capturas com:
  *  - Ordenação por data ou manual (drag & drop)
  *  - Swipe horizontal para navegar entre imagens
+ *  - Pinch-zoom + pan no visualizador de imagem
  *  - Abertura do editor ao toque longo
+ *
+ * MUDANÇAS v2.1:
+ *  - Adicionado ScaleGestureDetector para pinch-zoom na imagem
+ *  - Pan (arrastar) disponível quando zoom > 1
+ *  - Removido fechamento por toque simples (onSingleTapUp não fecha mais)
+ *  - Swipe horizontal ainda navega entre imagens
+ *  - Swipe para baixo ainda fecha
  */
 class LibraryFolderActivity : AppCompatActivity() {
 
@@ -190,7 +198,7 @@ class LibraryFolderActivity : AppCompatActivity() {
         val adapter = CaptureAdapter(this, captures)
         gridView.adapter = adapter
 
-        // Toque simples → visualizador com swipe
+        // Toque simples → visualizador com swipe + zoom
         gridView.setOnItemClickListener { _, _, pos, _ ->
             showSwipeViewer(pos)
         }
@@ -210,7 +218,7 @@ class LibraryFolderActivity : AppCompatActivity() {
     }
 
     // ─────────────────────────────────────────────
-    // VISUALIZADOR COM SWIPE
+    // VISUALIZADOR COM SWIPE + PINCH ZOOM + PAN
     // ─────────────────────────────────────────────
 
     private fun showSwipeViewer(startPosition: Int) {
@@ -220,10 +228,24 @@ class LibraryFolderActivity : AppCompatActivity() {
 
         var currentPos = startPosition
 
+        // ── Estado de zoom/pan ────────────────────
+        var scaleFactor  = 1f
+        val minScale     = 1f
+        val maxScale     = 8f
+        var panX         = 0f
+        var panY         = 0f
+        var lastPanX     = 0f
+        var lastPanY     = 0f
+        var isPanning    = false
+        var activePointerId = MotionEvent.INVALID_POINTER_ID
+
         val layout = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
 
+        // Matrix aplicada ao ImageView para zoom/pan
+        val matrix = Matrix()
+
         val imageView = ImageView(this).apply {
-            scaleType    = ImageView.ScaleType.FIT_CENTER
+            scaleType    = ImageView.ScaleType.MATRIX
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT)
@@ -242,6 +264,21 @@ class LibraryFolderActivity : AppCompatActivity() {
             }
         }
 
+        // Dica de uso no topo
+        val tvHint = TextView(this).apply {
+            text     = "Pinch para zoom • Swipe para navegar • ▼ para fechar"
+            textSize = 10f
+            setTextColor(Color.argb(180, 255, 255, 255))
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            background = GradientDrawable().apply { setColor(Color.argb(120, 0, 0, 0)) }
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                setMargins(0, dp(24), 0, 0)
+            }
+        }
+
         val tvClose = TextView(this).apply {
             text     = "✕"
             textSize = 20f
@@ -257,7 +294,6 @@ class LibraryFolderActivity : AppCompatActivity() {
             setOnClickListener { dialog.dismiss() }
         }
 
-        // Botão editar
         val tvEdit = TextView(this).apply {
             text     = "✏️ Editar"
             textSize = 13f
@@ -279,50 +315,186 @@ class LibraryFolderActivity : AppCompatActivity() {
             }
         }
 
+        // ── Função de reset do zoom ao trocar imagem ──
+        fun resetZoom() {
+            scaleFactor = 1f; panX = 0f; panY = 0f
+            matrix.reset()
+            imageView.imageMatrix = matrix
+        }
+
         fun loadImage() {
             val bmp = BitmapFactory.decodeFile(captures[currentPos].absolutePath)
             imageView.setImageBitmap(bmp)
             tvCounter.text = "${currentPos + 1} / ${captures.size}"
+
+            // Centraliza a imagem no ImageView usando FIT_CENTER manual
+            imageView.post {
+                if (bmp == null) return@post
+                val vw = imageView.width.toFloat()
+                val vh = imageView.height.toFloat()
+                val scale = minOf(vw / bmp.width, vh / bmp.height)
+                val dx = (vw - bmp.width * scale) / 2f
+                val dy = (vh - bmp.height * scale) / 2f
+                matrix.reset()
+                matrix.setScale(scale, scale)
+                matrix.postTranslate(dx, dy)
+                imageView.imageMatrix = matrix
+                // Guarda estado base para pan/zoom
+                scaleFactor = scale
+                panX = dx; panY = dy
+            }
         }
 
-        // Detector de swipe
-        val gestureDetector = android.view.GestureDetector(this,
-            object : android.view.GestureDetector.SimpleOnGestureListener() {
+        // ── ScaleGestureDetector para pinch-zoom ──
+        val scaleDetector = ScaleGestureDetector(this,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val bmp = (imageView.drawable
+                        ?.let { it as? android.graphics.drawable.BitmapDrawable }
+                        ?.bitmap) ?: return true
+
+                    val prevScale = scaleFactor
+                    scaleFactor *= detector.scaleFactor
+                    scaleFactor = scaleFactor.coerceIn(
+                        minOf(imageView.width.toFloat() / bmp.width,
+                            imageView.height.toFloat() / bmp.height)
+                            .coerceAtMost(minScale),
+                        maxScale
+                    )
+                    val ratio = scaleFactor / prevScale
+                    // Zoom centrado no ponto focal dos dedos
+                    panX = detector.focusX - (detector.focusX - panX) * ratio
+                    panY = detector.focusY - (detector.focusY - panY) * ratio
+
+                    matrix.reset()
+                    matrix.setScale(scaleFactor, scaleFactor)
+                    matrix.postTranslate(panX, panY)
+                    imageView.imageMatrix = matrix
+                    return true
+                }
+            })
+
+        // ── GestureDetector para swipe e pan ──────
+        val gestureDetector = GestureDetector(this,
+            object : GestureDetector.SimpleOnGestureListener() {
+
                 override fun onFling(
                     e1: MotionEvent?, e2: MotionEvent,
                     velocityX: Float, velocityY: Float
                 ): Boolean {
+                    // Só navega entre fotos se o zoom for mínimo (sem zoom ativo)
+                    val bmp = (imageView.drawable
+                        ?.let { it as? android.graphics.drawable.BitmapDrawable }
+                        ?.bitmap)
+                    val baseScale = if (bmp != null)
+                        minOf(imageView.width.toFloat() / bmp.width,
+                            imageView.height.toFloat() / bmp.height)
+                    else 1f
+                    val isZoomed = scaleFactor > baseScale * 1.05f
+
                     val dx = e2.x - (e1?.x ?: e2.x)
                     val dy = e2.y - (e1?.y ?: e2.y)
                     val absX = Math.abs(dx); val absY = Math.abs(dy)
 
-                    if (absX > absY && absX > 100) {
-                        // Swipe horizontal
+                    if (!isZoomed && absX > absY && absX > 100) {
+                        // Swipe horizontal → navegar
                         if (dx < 0 && currentPos < captures.lastIndex) {
-                            currentPos++; loadImage()
+                            currentPos++; resetZoom(); loadImage()
                         } else if (dx > 0 && currentPos > 0) {
-                            currentPos--; loadImage()
+                            currentPos--; resetZoom(); loadImage()
                         }
                         return true
                     }
-                    if (absY > absX && dy > 100) {
+                    if (!isZoomed && absY > absX && dy > 150) {
                         // Swipe para baixo → fechar
                         dialog.dismiss(); return true
                     }
                     return false
                 }
-                override fun onSingleTapUp(e: MotionEvent): Boolean {
-                    dialog.dismiss(); return true
-                }
+
+                // MUDANÇA: toque simples NÃO fecha mais o visualizador
+                // Antes tinha: override fun onSingleTapUp → dialog.dismiss()
+                // Agora: nenhuma ação no toque simples (apenas zoom/swipe fecham)
             })
 
+        // ── Touch unificado: zoom + pan + swipe ───
         imageView.setOnTouchListener { _, event ->
-            gestureDetector.onTouchEvent(event)
+            scaleDetector.onTouchEvent(event)
+
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    lastPanX = event.x; lastPanY = event.y
+                    activePointerId = event.getPointerId(0)
+                    isPanning = true
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    // Segundo dedo: cancela pan, deixa só o pinch
+                    isPanning = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!scaleDetector.isInProgress && isPanning && event.pointerCount == 1) {
+                        val bmp = (imageView.drawable
+                            ?.let { it as? android.graphics.drawable.BitmapDrawable }
+                            ?.bitmap)
+                        val baseScale = if (bmp != null)
+                            minOf(imageView.width.toFloat() / bmp.width,
+                                imageView.height.toFloat() / bmp.height)
+                        else 1f
+                        val isZoomed = scaleFactor > baseScale * 1.05f
+
+                        if (isZoomed) {
+                            // Pan livre dentro do zoom
+                            val idx = event.findPointerIndex(activePointerId)
+                            if (idx >= 0) {
+                                val dx = event.getX(idx) - lastPanX
+                                val dy = event.getY(idx) - lastPanY
+                                panX += dx; panY += dy
+                                // Limita pan para não expor área vazia além da imagem
+                                if (bmp != null) {
+                                    val imgW = bmp.width * scaleFactor
+                                    val imgH = bmp.height * scaleFactor
+                                    val vw   = imageView.width.toFloat()
+                                    val vh   = imageView.height.toFloat()
+                                    panX = panX.coerceIn(
+                                        minOf(0f, vw - imgW), maxOf(0f, vw - imgW))
+                                    panY = panY.coerceIn(
+                                        minOf(0f, vh - imgH), maxOf(0f, vh - imgH))
+                                }
+                                lastPanX = event.getX(idx)
+                                lastPanY = event.getY(idx)
+                                matrix.reset()
+                                matrix.setScale(scaleFactor, scaleFactor)
+                                matrix.postTranslate(panX, panY)
+                                imageView.imageMatrix = matrix
+                            }
+                        }
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    isPanning = false
+                    activePointerId = MotionEvent.INVALID_POINTER_ID
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    val idx = event.actionIndex
+                    val pid = event.getPointerId(idx)
+                    if (pid == activePointerId) {
+                        val newIdx = if (idx == 0) 1 else 0
+                        lastPanX = event.getX(newIdx)
+                        lastPanY = event.getY(newIdx)
+                        activePointerId = event.getPointerId(newIdx)
+                    }
+                    isPanning = true
+                }
+            }
+
+            // Encaminha para gestureDetector apenas com 1 dedo
+            if (event.pointerCount == 1) gestureDetector.onTouchEvent(event)
             true
         }
 
         layout.addView(imageView)
         layout.addView(tvCounter)
+        layout.addView(tvHint)
         layout.addView(tvClose)
         layout.addView(tvEdit)
 
@@ -348,14 +520,12 @@ class LibraryFolderActivity : AppCompatActivity() {
         gridView.setOnDragListener { _, event ->
             when (event.action) {
                 DragEvent.ACTION_DROP -> {
-                    // Descobre item sob o cursor
                     val x = event.x; val y = event.y
-                    val toPos = getGridPositionAt(x.toInt(), y.toInt())
+                    val toPos   = getGridPositionAt(x.toInt(), y.toInt())
                     val fromPos = dragFromPos
 
                     if (toPos >= 0 && fromPos >= 0 && fromPos != toPos &&
                         toPos < captures.size) {
-                        // Reordena
                         val item = captures.removeAt(fromPos)
                         captures.add(toPos, item)
                         GalleryManager.saveOrder(folder, captures.map { it.name })
@@ -364,23 +534,19 @@ class LibraryFolderActivity : AppCompatActivity() {
                     dragFromPos = -1
                     true
                 }
-                DragEvent.ACTION_DRAG_ENDED -> {
-                    dragFromPos = -1; true
-                }
+                DragEvent.ACTION_DRAG_ENDED -> { dragFromPos = -1; true }
                 else -> true
             }
         }
     }
 
     private fun getGridPositionAt(x: Int, y: Int): Int {
-        val cols    = gridView.numColumns
-        val cellW   = gridView.width / cols
-        val col     = (x / cellW).coerceIn(0, cols - 1)
-        val firstV  = gridView.firstVisiblePosition
-        // Estima linha a partir do Y visível
-        val cellH   = if (gridView.childCount > 0) gridView.getChildAt(0).height else 1
-        val row     = ((y + gridView.scrollY) / cellH).coerceAtLeast(0)
-        val pos     = row * cols + col
+        val cols   = gridView.numColumns
+        val cellW  = gridView.width / cols
+        val col    = (x / cellW).coerceIn(0, cols - 1)
+        val cellH  = if (gridView.childCount > 0) gridView.getChildAt(0).height else 1
+        val row    = ((y + gridView.scrollY) / cellH).coerceAtLeast(0)
+        val pos    = row * cols + col
         return pos.coerceIn(0, captures.lastIndex)
     }
 
@@ -502,7 +668,6 @@ class LibraryFolderActivity : AppCompatActivity() {
                     FrameLayout.LayoutParams.WRAP_CONTENT).apply { gravity = Gravity.BOTTOM }
             }
 
-            // Indicador de drag no modo manual
             if (sortMode == GalleryManager.SortMode.MANUAL) {
                 val tvDrag = TextView(ctx).apply {
                     text     = "⠿"
